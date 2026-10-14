@@ -4,7 +4,7 @@ import { Button, StyleSheet, Text, View } from "react-native";
 export default function HomeScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Welcome to MSafeE-wallet!</Text>
+      <Text style={styles.title}>Welcome to StudyMate_AI!</Text>
       <Text>Biometric login demonstration</Text>
 
       <Button title="Logout" onPress={() => router.replace("/login")} />
