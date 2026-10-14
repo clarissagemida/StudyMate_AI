@@ -39,7 +39,8 @@
         {
           "faceIDPermission": "Allow StudyMate_AI to use Face ID for secure login."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,

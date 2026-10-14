@@ -20,7 +20,7 @@ export default function LoginScreen() {
         // Temporary navigation for testing only.
         // Verify the Firebase user session before granting access.
         // Change "/(tabs)" if your home route is different.
-        router.replace("/(home)");
+        router.replace("/(tabs)");
       } else {
         Alert.alert("Login Failed", result.message);
       }
