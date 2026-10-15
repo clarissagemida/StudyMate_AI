@@ -7,11 +7,9 @@ export type BiometricResult = {
 
 export async function authenticateWithBiometrics(): Promise<BiometricResult> {
   try {
-    // 1. Check whether the device supports biometric hardware
-    const hasHardware = await LocalAuthentication.hasHardwareAsync();
-
-    // 2. Check whether the user has enrolled biometrics
-    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+    // Check device capabilities and enrollment (handled by authenticateAsync)
+    await LocalAuthentication.hasHardwareAsync();
+    await LocalAuthentication.isEnrolledAsync();
 
     // 3. Allow biometrics or the phone's screen-lock credentials
     // such as PIN, pattern, or password when supported.

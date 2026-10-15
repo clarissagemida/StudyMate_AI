@@ -61,19 +61,23 @@ export default function AdminHome() {
 
       setAdminName(profile.full_name || "Administrator");
 
-      // Count registered profiles.
+      // Count registered student/teacher accounts (administrators excluded).
       const { count: usersCount, error: usersError } = await supabase
         .from("profiles")
-        .select("*", { count: "exact", head: true });
+        .select("*", { count: "exact", head: true })
+        .or("(role.neq.admin,role.is.null)")
+        .or("(requested_role.neq.admin,requested_role.is.null)");
 
       if (usersError) throw usersError;
       setTotalUsers(usersCount ?? 0);
 
-      // Count accounts waiting for approval.
+      // Count student/teacher accounts waiting for approval.
       const { count: pendingCount, error: pendingError } = await supabase
         .from("profiles")
         .select("*", { count: "exact", head: true })
-        .eq("approval_status", "pending");
+        .eq("approval_status", "pending")
+        .or("(role.neq.admin,role.is.null)")
+        .or("(requested_role.neq.admin,requested_role.is.null)");
 
       if (pendingError) throw pendingError;
       setPendingUsers(pendingCount ?? 0);

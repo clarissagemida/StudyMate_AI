@@ -8,13 +8,13 @@ import {
     KeyboardAvoidingView,
     Platform,
     Pressable,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
     TextInput,
     View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 type UserRole = "student" | "teacher";
 
@@ -87,10 +87,7 @@ export default function RegisterScreen() {
       if (error) {
         const message = error.message.toLowerCase();
 
-        if (
-          message.includes("duplicate key") ||
-          message.includes("unique constraint")
-        ) {
+        if (message.includes("duplicate key") || message.includes("unique constraint")) {
           Alert.alert(
             "Information already exists",
             "This Student / School ID may already be registered. Please check your details.",
@@ -103,6 +100,33 @@ export default function RegisterScreen() {
             "Account may already exist",
             "Try logging in with this email address.",
           );
+        } else if (
+          message.includes("over_email_send_rate_limit") ||
+          message.includes("rate limit")
+        ) {
+          Alert.alert(
+            "Too many attempts",
+            "Too many sign-ups were tried in a short time. Please wait a few minutes and try again.",
+          );
+        } else if (
+          message.includes("email_address_invalid") ||
+          message.includes("validation_failed") ||
+          message.includes("invalid format")
+        ) {
+          Alert.alert(
+            "Invalid email",
+            "Supabase could not validate this email. Please use a different, valid email address.",
+          );
+        } else if (message.includes("weak_password")) {
+          Alert.alert(
+            "Weak password",
+            "Password must be at least 6 characters long.",
+          );
+        } else if (message.includes("email_not_confirmed")) {
+          Alert.alert(
+            "Email not confirmed",
+            "Please check your inbox and confirm your email address first, then log in.",
+          );
         } else {
           Alert.alert("Registration failed", error.message);
         }
@@ -110,9 +134,13 @@ export default function RegisterScreen() {
         return;
       }
 
+      // A pending account must not hold a session; access is only granted
+      // after an administrator approves it.
+      await supabase.auth.signOut();
+
       Alert.alert(
         "Registration submitted",
-        "Your registration was submitted successfully. Your account may require email verification and administrator approval before you can access StudyMate AI.",
+        "Your registration was sent to the administrator for review. You will be able to sign in once an administrator approves your account.",
         [
           {
             text: "Go to Login",
