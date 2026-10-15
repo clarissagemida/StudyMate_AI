@@ -1,19 +1,19 @@
 {
   "expo": {
-    "name": "StudyMate_AI",
+    "name": "StudyMate AI",
     "slug": "StudyMate_AI",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/studymate_logo.png",
     "scheme": "studymateai",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/studymate_logo.png"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundColor": "#064E2B",
+        "foregroundImage": "./assets/images/studymate_logo.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
@@ -28,16 +28,17 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "backgroundColor": "#064E2B",
+          "image": "./assets/images/studymate_logo.png",
+          "imageWidth": 250,
+          "resizeMode": "contain"
         }
       ],
       "expo-secure-store",
       [
         "expo-local-authentication",
         {
-          "faceIDPermission": "Allow StudyMate_AI to use Face ID for secure login."
+          "faceIDPermission": "Allow StudyMate AI to use Face ID for secure login."
         }
       ],
       "expo-sqlite"
