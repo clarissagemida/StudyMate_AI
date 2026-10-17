@@ -11,6 +11,7 @@
       "icon": "./assets/images/studymate_logo.png"
     },
     "android": {
+      "package": "com.studymateai.app",
       "adaptiveIcon": {
         "backgroundColor": "#064E2B",
         "foregroundImage": "./assets/images/studymate_logo.png",

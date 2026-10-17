@@ -1,22 +1,27 @@
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 type UserRole = "student" | "teacher";
+
+const GREEN = "#176B45";
+const MAX_PHOTO_SIZE = 5 * 1024 * 1024;
 
 export default function RegisterScreen() {
   const [fullName, setFullName] = useState("");
@@ -26,9 +31,109 @@ export default function RegisterScreen() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [requestedRole, setRequestedRole] = useState<UserRole>("student");
 
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [avatarMimeType, setAvatarMimeType] = useState<string | null>(null);
+
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Password must have at least 8 characters and all four character types.
+  const passwordChecks = [
+    {
+      label: "At least 8 characters",
+      valid: password.length >= 8,
+    },
+    {
+      label: "One uppercase letter (A–Z)",
+      valid: /[A-Z]/.test(password),
+    },
+    {
+      label: "One lowercase letter (a–z)",
+      valid: /[a-z]/.test(password),
+    },
+    {
+      label: "One number (0–9)",
+      valid: /[0-9]/.test(password),
+    },
+    {
+      label: "One special character (!@#$...)",
+      valid: /[^A-Za-z0-9]/.test(password),
+    },
+  ];
+
+  const passwordScore = passwordChecks.filter((check) => check.valid).length;
+
+  const passwordStrength =
+    password.length === 0
+      ? ""
+      : passwordScore <= 2
+        ? "Weak"
+        : passwordScore <= 4
+          ? "Fair"
+          : "Strong";
+
+  const passwordsMatch =
+    confirmPassword.length > 0 && password === confirmPassword;
+
+  const strengthColor =
+    passwordStrength === "Strong"
+      ? GREEN
+      : passwordStrength === "Fair"
+        ? "#B7791F"
+        : "#D64545";
+
+  // Select a profile photo from the phone's gallery.
+  const pickProfilePhoto = async () => {
+    if (loading) return;
+
+    try {
+      const permission =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (!permission.granted) {
+        Alert.alert(
+          "Photo Permission Needed",
+          "Allow StudyMate AI to access your photo library to choose a profile picture.",
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (result.canceled || !result.assets[0]) return;
+
+      const photo = result.assets[0];
+
+      if (photo.fileSize && photo.fileSize > MAX_PHOTO_SIZE) {
+        Alert.alert(
+          "Photo Is Too Large",
+          "Please choose an image that is 5 MB or smaller.",
+        );
+        return;
+      }
+
+      setAvatarUri(photo.uri);
+      setAvatarMimeType(photo.mimeType ?? "image/jpeg");
+    } catch (error) {
+      console.error("Photo selection failed:", error);
+
+      Alert.alert(
+        "Unable to Select Photo",
+        "Please try choosing your photo again.",
+      );
+    }
+  };
+
+  const removeProfilePhoto = () => {
+    setAvatarUri(null);
+    setAvatarMimeType(null);
+  };
 
   const handleRegister = async () => {
     if (loading) return;
@@ -44,26 +149,34 @@ export default function RegisterScreen() {
       !password ||
       !confirmPassword
     ) {
-      Alert.alert("Missing information", "Please complete all fields.");
+      Alert.alert(
+        "Missing Information",
+        "Please complete all required fields.",
+      );
+      return;
+    }
+
+    if (cleanName.length < 2) {
+      Alert.alert("Invalid Name", "Please enter your full name.");
       return;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      Alert.alert("Invalid email", "Please enter a valid email address.");
+      Alert.alert("Invalid Email", "Please enter a valid email address.");
       return;
     }
 
-    if (password.length < 8) {
+    if (!passwordChecks.every((check) => check.valid)) {
       Alert.alert(
-        "Weak password",
-        "Use at least 8 characters for your password.",
+        "Password Requirements Not Met",
+        "Your password must contain at least 8 characters, one uppercase letter, one lowercase letter, one number, and one special character.",
       );
       return;
     }
 
     if (password !== confirmPassword) {
       Alert.alert(
-        "Passwords do not match",
+        "Passwords Do Not Match",
         "Please make sure both passwords are the same.",
       );
       return;
@@ -72,7 +185,7 @@ export default function RegisterScreen() {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
         password,
         options: {
@@ -86,27 +199,47 @@ export default function RegisterScreen() {
 
       if (error) {
         const message = error.message.toLowerCase();
+        const errorCode =
+          (error as { code?: string }).code?.toLowerCase() ?? "";
 
-        if (message.includes("duplicate key") || message.includes("unique constraint")) {
-          Alert.alert(
-            "Information already exists",
-            "This Student / School ID may already be registered. Please check your details.",
-          );
-        } else if (
+        // Detect explicit duplicate-email responses from Supabase.
+        if (
+          errorCode === "user_already_exists" ||
+          message.includes("user already registered") ||
+          message.includes("email already registered") ||
           message.includes("already registered") ||
+          message.includes("email address is already") ||
           message.includes("already exists")
         ) {
           Alert.alert(
-            "Account may already exist",
-            "Try logging in with this email address.",
+            "Email Already Registered",
+            "This email may already have a StudyMate AI account. Please log in using this email or register with a different email address.",
+            [
+              {
+                text: "Use Another Email",
+                style: "cancel",
+              },
+              {
+                text: "Go to Login",
+                onPress: () => router.replace("/login"),
+              },
+            ],
+          );
+        } else if (
+          message.includes("duplicate key") ||
+          message.includes("unique constraint")
+        ) {
+          Alert.alert(
+            "Information Already Exists",
+            "Your Student / School ID or another unique field may already be registered. Please check your details.",
           );
         } else if (
           message.includes("over_email_send_rate_limit") ||
           message.includes("rate limit")
         ) {
           Alert.alert(
-            "Too many attempts",
-            "Too many sign-ups were tried in a short time. Please wait a few minutes and try again.",
+            "Too Many Attempts",
+            "Too many registration attempts were made. Please wait a few minutes before trying again.",
           );
         } else if (
           message.includes("email_address_invalid") ||
@@ -114,47 +247,134 @@ export default function RegisterScreen() {
           message.includes("invalid format")
         ) {
           Alert.alert(
-            "Invalid email",
-            "Supabase could not validate this email. Please use a different, valid email address.",
+            "Invalid Email",
+            "Please check your email address and enter a valid one.",
           );
-        } else if (message.includes("weak_password")) {
+        } else if (
+          message.includes("weak_password") ||
+          message.includes("password should")
+        ) {
           Alert.alert(
-            "Weak password",
-            "Password must be at least 6 characters long.",
-          );
-        } else if (message.includes("email_not_confirmed")) {
-          Alert.alert(
-            "Email not confirmed",
-            "Please check your inbox and confirm your email address first, then log in.",
+            "Password Rejected",
+            "Supabase rejected this password. Use at least 8 characters with uppercase and lowercase letters, a number, and a special character. Your Supabase password policy may require additional rules.",
           );
         } else {
-          Alert.alert("Registration failed", error.message);
+          console.error("Registration failed:", error.message);
+
+          Alert.alert(
+            "Registration Failed",
+            "We couldn't create your account. Please try again.",
+          );
         }
 
         return;
       }
 
-      // A pending account must not hold a session; access is only granted
-      // after an administrator approves it.
-      await supabase.auth.signOut();
+      // A successful response does not always prove that a new account
+      // was created. Supabase may conceal existing accounts when email
+      // confirmation is enabled to protect user privacy.
+      const emailConfirmationRequired = !data.session;
+      let photoUploaded = false;
+
+      // Upload the photo only when an authenticated session is available.
+      if (data.session && data.user && avatarUri) {
+        const photoPath = `${data.user.id}/profile-${Date.now()}.${
+          avatarMimeType === "image/png"
+            ? "png"
+            : avatarMimeType === "image/webp"
+              ? "webp"
+              : avatarMimeType === "image/heic"
+                ? "heic"
+                : "jpg"
+        }`;
+
+        try {
+          const response = await fetch(avatarUri);
+
+          if (!response.ok) {
+            throw new Error("Could not read the selected photo.");
+          }
+
+          const fileBuffer = await response.arrayBuffer();
+          const contentType = avatarMimeType ?? "image/jpeg";
+
+          const { error: uploadError } = await supabase.storage
+            .from("profile-photos")
+            .upload(photoPath, fileBuffer, {
+              contentType,
+              upsert: false,
+            });
+
+          if (uploadError) {
+            throw uploadError;
+          }
+
+          const { error: profileError } = await supabase
+            .from("profiles")
+            .update({ avatar_path: photoPath })
+            .eq("id", data.user.id);
+
+          if (profileError) {
+            const { error: cleanupError } = await supabase.storage
+              .from("profile-photos")
+              .remove([photoPath]);
+
+            if (cleanupError) {
+              console.error("Photo cleanup failed:", cleanupError.message);
+            }
+
+            throw profileError;
+          }
+
+          photoUploaded = true;
+        } catch (photoError) {
+          console.error("Profile photo upload failed:", photoError);
+        }
+      }
+
+      // Clear the temporary session so the user follows the normal login flow.
+      if (data.session) {
+        const { error: signOutError } = await supabase.auth.signOut();
+
+        if (signOutError) {
+          console.error(
+            "Could not clear registration session:",
+            signOutError.message,
+          );
+        }
+      }
+
+      let resultMessage: string;
+
+      if (emailConfirmationRequired) {
+        resultMessage =
+          "If this email can be registered, follow the confirmation instructions sent to your inbox. If the address already has an account, please log in instead. You can upload your profile photo after confirming your email and signing in.";
+      } else if (avatarUri && photoUploaded) {
+        resultMessage =
+          "Your account was created and your profile photo was saved. You can now sign in, subject to any required administrator approval.";
+      } else if (avatarUri && !photoUploaded) {
+        resultMessage =
+          "Your account was created, but your profile photo could not be saved. You can try uploading it again after signing in.";
+      } else {
+        resultMessage =
+          "Your account was created. You can add a profile photo after signing in. Complete any required administrator approval before accessing restricted features.";
+      }
+
+      Alert.alert("Registration Submitted", resultMessage, [
+        {
+          text: "Go to Login",
+          onPress: () => router.replace("/login"),
+        },
+      ]);
+    } catch (error: unknown) {
+      console.error("Unexpected registration error:", error);
 
       Alert.alert(
-        "Registration submitted",
-        "Your registration was sent to the administrator for review. You will be able to sign in once an administrator approves your account.",
-        [
-          {
-            text: "Go to Login",
-            onPress: () => router.replace("/login"),
-          },
-        ],
-      );
-    } catch (error) {
-      const message =
+        "Something Went Wrong",
         error instanceof Error
           ? error.message
-          : "Please check your internet connection and try again.";
-
-      Alert.alert("Something went wrong", message);
+          : "Please check your internet connection and try again.",
+      );
     } finally {
       setLoading(false);
     }
@@ -178,13 +398,13 @@ export default function RegisterScreen() {
               disabled={loading}
               accessibilityRole="button"
             >
-              <Ionicons name="arrow-back" size={19} color="#176B45" />
+              <Ionicons name="arrow-back" size={19} color={GREEN} />
               <Text style={styles.backText}>Back to login</Text>
             </Pressable>
 
             <View style={styles.header}>
               <View style={styles.logoCircle}>
-                <Ionicons name="school-outline" size={30} color="#176B45" />
+                <Ionicons name="school-outline" size={30} color={GREEN} />
               </View>
 
               <Text style={styles.title}>Create account</Text>
@@ -195,6 +415,61 @@ export default function RegisterScreen() {
 
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>Personal details</Text>
+
+              <View style={styles.photoSection}>
+                <Pressable
+                  style={styles.photoPicker}
+                  onPress={pickProfilePhoto}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choose profile photo"
+                >
+                  {avatarUri ? (
+                    <Image
+                      source={{ uri: avatarUri }}
+                      style={styles.profilePhoto}
+                    />
+                  ) : (
+                    <View style={styles.photoPlaceholder}>
+                      <Ionicons
+                        name="person-outline"
+                        size={38}
+                        color="#7A9181"
+                      />
+                    </View>
+                  )}
+
+                  <View style={styles.photoEditBadge}>
+                    <Ionicons name="camera" size={15} color="#FFFFFF" />
+                  </View>
+                </Pressable>
+
+                <Text style={styles.photoTitle}>Profile photo</Text>
+                <Text style={styles.photoHint}>
+                  Optional · Square image · Maximum 5 MB
+                </Text>
+
+                <Pressable
+                  onPress={pickProfilePhoto}
+                  disabled={loading}
+                  style={styles.choosePhotoButton}
+                >
+                  <Ionicons name="image-outline" size={16} color={GREEN} />
+                  <Text style={styles.choosePhotoText}>
+                    {avatarUri ? "Change photo" : "Choose photo"}
+                  </Text>
+                </Pressable>
+
+                {avatarUri && (
+                  <Pressable
+                    onPress={removeProfilePhoto}
+                    disabled={loading}
+                    style={styles.removePhotoButton}
+                  >
+                    <Text style={styles.removePhotoText}>Remove photo</Text>
+                  </Pressable>
+                )}
+              </View>
 
               <Text style={styles.label}>Full name</Text>
               <View style={styles.inputContainer}>
@@ -263,7 +538,7 @@ export default function RegisterScreen() {
                   <Ionicons
                     name="book-outline"
                     size={20}
-                    color={requestedRole === "student" ? "#176B45" : "#849188"}
+                    color={requestedRole === "student" ? GREEN : "#849188"}
                   />
                   <Text
                     style={[
@@ -274,11 +549,7 @@ export default function RegisterScreen() {
                     Student
                   </Text>
                   {requestedRole === "student" && (
-                    <Ionicons
-                      name="checkmark-circle"
-                      size={17}
-                      color="#176B45"
-                    />
+                    <Ionicons name="checkmark-circle" size={17} color={GREEN} />
                   )}
                 </Pressable>
 
@@ -297,7 +568,7 @@ export default function RegisterScreen() {
                   <Ionicons
                     name="easel-outline"
                     size={20}
-                    color={requestedRole === "teacher" ? "#176B45" : "#849188"}
+                    color={requestedRole === "teacher" ? GREEN : "#849188"}
                   />
                   <Text
                     style={[
@@ -308,11 +579,7 @@ export default function RegisterScreen() {
                     Teacher
                   </Text>
                   {requestedRole === "teacher" && (
-                    <Ionicons
-                      name="checkmark-circle"
-                      size={17}
-                      color="#176B45"
-                    />
+                    <Ionicons name="checkmark-circle" size={17} color={GREEN} />
                   )}
                 </Pressable>
               </View>
@@ -324,7 +591,8 @@ export default function RegisterScreen() {
                   color="#52765F"
                 />
                 <Text style={styles.noticeText}>
-                  Account access may require administrator approval.
+                  Account access may require administrator approval. Choosing
+                  Teacher does not automatically grant teacher permissions.
                 </Text>
               </View>
 
@@ -337,7 +605,7 @@ export default function RegisterScreen() {
                 />
                 <TextInput
                   style={styles.input}
-                  placeholder="At least 8 characters"
+                  placeholder="Create a strong password"
                   placeholderTextColor="#9BA69F"
                   value={password}
                   onChangeText={setPassword}
@@ -345,6 +613,7 @@ export default function RegisterScreen() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   autoComplete="new-password"
+                  textContentType="newPassword"
                   editable={!loading}
                   returnKeyType="next"
                 />
@@ -365,8 +634,68 @@ export default function RegisterScreen() {
                 </Pressable>
               </View>
 
+              {password.length > 0 && (
+                <View style={styles.passwordStrengthContainer}>
+                  <View style={styles.passwordStrengthHeader}>
+                    <Text style={styles.passwordStrengthTitle}>
+                      Password strength
+                    </Text>
+                    <Text
+                      style={[
+                        styles.passwordStrengthValue,
+                        { color: strengthColor },
+                      ]}
+                    >
+                      {passwordStrength}
+                    </Text>
+                  </View>
+
+                  <View style={styles.strengthBars}>
+                    {[1, 2, 3, 4, 5].map((level) => (
+                      <View
+                        key={level}
+                        style={[
+                          styles.strengthBar,
+                          passwordScore >= level && {
+                            backgroundColor: strengthColor,
+                          },
+                        ]}
+                      />
+                    ))}
+                  </View>
+
+                  <View style={styles.passwordChecklist}>
+                    {passwordChecks.map((check) => (
+                      <View key={check.label} style={styles.passwordCheckRow}>
+                        <Ionicons
+                          name={
+                            check.valid ? "checkmark-circle" : "ellipse-outline"
+                          }
+                          size={16}
+                          color={check.valid ? GREEN : "#9BA69F"}
+                        />
+                        <Text
+                          style={[
+                            styles.passwordCheckText,
+                            check.valid && styles.passwordCheckValid,
+                          ]}
+                        >
+                          {check.label}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+
               <Text style={styles.label}>Confirm password</Text>
-              <View style={styles.inputContainer}>
+              <View
+                style={[
+                  styles.inputContainer,
+                  confirmPassword.length > 0 &&
+                    (passwordsMatch ? styles.inputValid : styles.inputInvalid),
+                ]}
+              >
                 <Ionicons
                   name="shield-checkmark-outline"
                   size={19}
@@ -382,6 +711,7 @@ export default function RegisterScreen() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   autoComplete="new-password"
+                  textContentType="newPassword"
                   editable={!loading}
                   returnKeyType="done"
                   onSubmitEditing={handleRegister}
@@ -408,6 +738,19 @@ export default function RegisterScreen() {
                   />
                 </Pressable>
               </View>
+
+              {confirmPassword.length > 0 && (
+                <Text
+                  style={[
+                    styles.matchText,
+                    { color: passwordsMatch ? GREEN : "#D64545" },
+                  ]}
+                >
+                  {passwordsMatch
+                    ? "Passwords match"
+                    : "Passwords do not match"}
+                </Text>
+              )}
 
               <Pressable
                 style={({ pressed }) => [
@@ -478,7 +821,7 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   backText: {
-    color: "#176B45",
+    color: GREEN,
     fontSize: 13,
     fontWeight: "600",
   },
@@ -530,6 +873,92 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginBottom: 3,
   },
+  photoSection: {
+    alignItems: "center",
+    paddingVertical: 18,
+    marginTop: 8,
+    marginBottom: 2,
+    backgroundColor: "#F8FBF8",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E5ECE6",
+    borderStyle: "dashed",
+  },
+  photoPicker: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    marginBottom: 12,
+    position: "relative",
+  },
+  photoPlaceholder: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    backgroundColor: "#E6F0E8",
+    borderWidth: 2,
+    borderColor: "#D4E5D8",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  profilePhoto: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    borderWidth: 2,
+    borderColor: "#D4E5D8",
+  },
+  photoEditBadge: {
+    position: "absolute",
+    right: 0,
+    bottom: 1,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: GREEN,
+    borderWidth: 3,
+    borderColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  photoTitle: {
+    color: "#234B36",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  photoHint: {
+    color: "#849188",
+    fontSize: 11,
+    marginTop: 5,
+    textAlign: "center",
+    paddingHorizontal: 10,
+  },
+  choosePhotoButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "#EAF4EC",
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    marginTop: 12,
+  },
+  choosePhotoText: {
+    color: GREEN,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  removePhotoButton: {
+    marginTop: 9,
+    padding: 4,
+  },
+  removePhotoText: {
+    color: "#C34444",
+    fontSize: 11,
+    fontWeight: "700",
+  },
   label: {
     color: "#365341",
     fontSize: 12,
@@ -554,6 +983,12 @@ const styles = StyleSheet.create({
     color: "#173D2B",
     fontSize: 13,
     paddingVertical: 12,
+  },
+  inputValid: {
+    borderColor: "#5A9A70",
+  },
+  inputInvalid: {
+    borderColor: "#D64545",
   },
   roleContainer: {
     flexDirection: "row",
@@ -582,7 +1017,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   roleTextSelected: {
-    color: "#176B45",
+    color: GREEN,
     fontWeight: "800",
   },
   notice: {
@@ -600,13 +1035,68 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
   },
+  passwordStrengthContainer: {
+    marginTop: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#F7FAF7",
+    borderWidth: 1,
+    borderColor: "#E5ECE6",
+  },
+  passwordStrengthHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 9,
+  },
+  passwordStrengthTitle: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#52675A",
+  },
+  passwordStrengthValue: {
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  strengthBars: {
+    flexDirection: "row",
+    gap: 5,
+    marginBottom: 12,
+  },
+  strengthBar: {
+    flex: 1,
+    height: 5,
+    borderRadius: 5,
+    backgroundColor: "#E1E8E2",
+  },
+  passwordChecklist: {
+    gap: 7,
+  },
+  passwordCheckRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  passwordCheckText: {
+    fontSize: 11,
+    color: "#849188",
+  },
+  passwordCheckValid: {
+    color: GREEN,
+    fontWeight: "600",
+  },
+  matchText: {
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 7,
+  },
   registerButton: {
     minHeight: 51,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 9,
-    backgroundColor: "#176B45",
+    backgroundColor: GREEN,
     borderRadius: 13,
     marginTop: 23,
     paddingHorizontal: 16,
@@ -634,7 +1124,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   loginLink: {
-    color: "#176B45",
+    color: GREEN,
     fontSize: 12,
     fontWeight: "800",
   },

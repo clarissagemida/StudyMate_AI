@@ -1,492 +1,652 @@
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const GREEN = "#176B45";
-const DARK_GREEN = "#104D33";
-const BG = "#F4F8F5";
+type DashboardStats = {
+  totalUsers: number;
+  pendingUsers: number;
+};
 
-export default function AdminHome() {
+type DashboardError = {
+  message?: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+};
+
+export default function AdminHomeScreen() {
   const [loading, setLoading] = useState(true);
-  const [signingOut, setSigningOut] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [adminName, setAdminName] = useState("Administrator");
-  const [totalUsers, setTotalUsers] = useState(0);
-  const [pendingUsers, setPendingUsers] = useState(0);
 
-  useEffect(() => {
-    loadDashboard();
-  }, []);
+  const [stats, setStats] = useState<DashboardStats>({
+    totalUsers: 0,
+    pendingUsers: 0,
+  });
 
-  async function loadDashboard() {
-    setLoading(true);
-
+  const loadDashboard = useCallback(async () => {
     try {
+      // 1. Verify the current authenticated user.
       const {
         data: { user },
         error: authError,
       } = await supabase.auth.getUser();
 
-      if (authError || !user) {
+      if (authError) {
+        throw authError;
+      }
+
+      if (!user) {
         router.replace("/login");
         return;
       }
 
-      // Verify the signed-in account's role in Supabase.
+      // 2. Load the administrator's profile.
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("full_name, role, approval_status")
         .eq("id", user.id)
-        .single();
+        .maybeSingle();
 
-      if (profileError || profile?.role !== "admin") {
+      if (profileError) {
+        console.error("Admin profile query failed:", {
+          message: profileError.message,
+          code: profileError.code,
+          details: profileError.details,
+          hint: profileError.hint,
+        });
+
+        throw profileError;
+      }
+
+      // 3. Ensure this account has administrator access.
+      if (
+        profile?.role !== "admin" ||
+        profile?.approval_status !== "approved"
+      ) {
         Alert.alert(
           "Access denied",
-          "This page is only available to administrators.",
+          "This page is only available to approved administrators.",
         );
+
         await supabase.auth.signOut();
         router.replace("/login");
         return;
       }
 
-      setAdminName(profile.full_name || "Administrator");
+      setAdminName(profile.full_name?.trim() || "Administrator");
 
-      // Count registered student/teacher accounts (administrators excluded).
+      // 4. Count non-admin profiles.
       const { count: usersCount, error: usersError } = await supabase
         .from("profiles")
-        .select("*", { count: "exact", head: true })
-        .or("(role.neq.admin,role.is.null)")
-        .or("(requested_role.neq.admin,requested_role.is.null)");
+        .select("id", { count: "exact", head: true })
+        .or("role.neq.admin,role.is.null");
 
-      if (usersError) throw usersError;
-      setTotalUsers(usersCount ?? 0);
+      if (usersError) {
+        console.error("Total accounts query failed:", {
+          message: usersError.message,
+          code: usersError.code,
+          details: usersError.details,
+          hint: usersError.hint,
+        });
 
-      // Count student/teacher accounts waiting for approval.
+        throw usersError;
+      }
+
+      // 5. Count non-admin profiles awaiting approval.
       const { count: pendingCount, error: pendingError } = await supabase
         .from("profiles")
-        .select("*", { count: "exact", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("approval_status", "pending")
-        .or("(role.neq.admin,role.is.null)")
-        .or("(requested_role.neq.admin,requested_role.is.null)");
+        .or("role.neq.admin,role.is.null");
 
-      if (pendingError) throw pendingError;
-      setPendingUsers(pendingCount ?? 0);
-    } catch (error) {
-      console.error("Admin dashboard error:", error);
+      if (pendingError) {
+        console.error("Pending accounts query failed:", {
+          message: pendingError.message,
+          code: pendingError.code,
+          details: pendingError.details,
+          hint: pendingError.hint,
+        });
+
+        throw pendingError;
+      }
+
+      // 6. Update the dashboard statistics.
+      setStats({
+        totalUsers: usersCount ?? 0,
+        pendingUsers: pendingCount ?? 0,
+      });
+    } catch (error: unknown) {
+      const err = error as DashboardError;
+
+      console.error("Admin dashboard error:", {
+        message: err?.message,
+        code: err?.code,
+        details: err?.details,
+        hint: err?.hint,
+        error,
+      });
+
       Alert.alert(
         "Unable to load dashboard",
-        "Please check your Supabase connection and profiles table policies.",
+        err?.message ||
+          "Could not load dashboard data. Check your connection, database schema, and Supabase access policies.",
       );
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  }
+  }, []);
 
-  async function handleLogout() {
-    Alert.alert("Log out", "Are you sure you want to log out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log out",
-        style: "destructive",
-        onPress: async () => {
-          setSigningOut(true);
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
 
-          const { error } = await supabase.auth.signOut();
+  const handleRefresh = () => {
+    if (refreshing) return;
 
-          setSigningOut(false);
-
-          if (error) {
-            Alert.alert("Logout failed", error.message);
-            return;
-          }
-
-          router.replace("/login");
-        },
-      },
-    ]);
-  }
+    setRefreshing(true);
+    void loadDashboard();
+  };
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingScreen}>
-        <ActivityIndicator size="large" color={GREEN} />
-        <Text style={styles.loadingText}>Loading admin dashboard...</Text>
+      <SafeAreaView style={styles.loadingContainer}>
+        <StatusBar barStyle="dark-content" backgroundColor="#F4F8F5" />
+
+        <View style={styles.loadingIcon}>
+          <Ionicons name="school-outline" size={34} color="#16794A" />
+        </View>
+
+        <ActivityIndicator size="large" color="#16794A" style={styles.loader} />
+
+        <Text style={styles.loadingTitle}>Loading dashboard</Text>
+
+        <Text style={styles.loadingSubtitle}>
+          Please wait while we retrieve your data.
+        </Text>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView
-        contentContainerStyle={styles.container}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.header}>
-          <View style={styles.brandIcon}>
-            <Ionicons name="school" size={25} color="#FFFFFF" />
-          </View>
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="#F4F8F5" />
 
-          <View style={styles.brandText}>
-            <Text style={styles.brandTitle}>StudyMate AI</Text>
-            <Text style={styles.brandSubtitle}>ADMINISTRATOR PANEL</Text>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={["#16794A"]}
+            tintColor="#16794A"
+          />
+        }
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.brandContainer}>
+            <View style={styles.brandIcon}>
+              <Ionicons name="school" size={25} color="#FFFFFF" />
+            </View>
+
+            <View>
+              <Text style={styles.brandName}>StudyMate AI</Text>
+              <Text style={styles.brandSubtitle}>ADMINISTRATION</Text>
+            </View>
           </View>
 
           <Pressable
-            style={styles.logoutIcon}
-            onPress={handleLogout}
-            accessibilityLabel="Log out"
+            style={({ pressed }) => [
+              styles.refreshButton,
+              pressed && styles.pressedButton,
+              refreshing && styles.disabledButton,
+            ]}
+            onPress={handleRefresh}
+            disabled={refreshing}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh dashboard"
           >
-            <Ionicons name="log-out-outline" size={23} color={DARK_GREEN} />
+            {refreshing ? (
+              <ActivityIndicator size="small" color="#16794A" />
+            ) : (
+              <Ionicons name="refresh-outline" size={22} color="#16794A" />
+            )}
           </Pressable>
         </View>
 
-        <View style={styles.welcomeCard}>
-          <View style={styles.adminBadge}>
-            <Ionicons name="shield-checkmark" size={15} color="#FFFFFF" />
-            <Text style={styles.adminBadgeText}>ADMIN ACCESS</Text>
-          </View>
+        {/* Welcome */}
+        <View style={styles.welcomeSection}>
+          <Text style={styles.eyebrow}>ADMIN DASHBOARD</Text>
 
-          <Text style={styles.welcomeTitle}>Welcome back!</Text>
+          <Text style={styles.welcomeTitle}>Welcome back,</Text>
+
           <Text style={styles.adminName}>{adminName}</Text>
+
           <Text style={styles.welcomeDescription}>
-            Manage accounts and help keep the StudyMate AI learning community
-            organized.
+            Manage accounts and monitor registration activity in your StudyMate
+            AI application.
           </Text>
         </View>
 
-        <View style={styles.sectionHeading}>
-          <Text style={styles.sectionTitle}>Overview</Text>
-          <Pressable onPress={loadDashboard}>
-            <Ionicons name="refresh-outline" size={22} color={GREEN} />
-          </Pressable>
-        </View>
+        {/* Statistics */}
+        <Text style={styles.sectionTitle}>Overview</Text>
 
-        <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#E2F1E7" }]}>
-              <Ionicons name="people" size={23} color={GREEN} />
+        <View style={styles.statsContainer}>
+          <View style={[styles.statCard, styles.totalCard]}>
+            <View style={styles.totalIcon}>
+              <Ionicons name="people-outline" size={23} color="#16794A" />
             </View>
-            <Text style={styles.statLabel}>Total accounts</Text>
-            <Text style={styles.statNumber}>{totalUsers}</Text>
-            <Text style={styles.statFootnote}>Registered profiles</Text>
+
+            <Text style={styles.statLabel}>Total Accounts</Text>
+
+            <Text style={styles.statValue}>{stats.totalUsers}</Text>
+
+            <Text style={styles.statDescription}>
+              Registered non-admin profiles
+            </Text>
           </View>
 
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#FFF0D8" }]}>
-              <Ionicons name="time-outline" size={23} color="#B87515" />
+          <View style={[styles.statCard, styles.pendingCard]}>
+            <View style={styles.pendingIcon}>
+              <Ionicons name="time-outline" size={23} color="#B7791F" />
             </View>
-            <Text style={styles.statLabel}>Pending approval</Text>
-            <Text style={styles.statNumber}>{pendingUsers}</Text>
-            <Text style={styles.statFootnote}>Awaiting review</Text>
+
+            <Text style={styles.statLabel}>Pending Approval</Text>
+
+            <Text style={styles.pendingValue}>{stats.pendingUsers}</Text>
+
+            <Text style={styles.statDescription}>Accounts awaiting review</Text>
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Account management</Text>
+        {/* Account management */}
+        <Text style={styles.sectionTitle}>Management</Text>
 
         <Pressable
-          style={styles.managementCard}
+          style={({ pressed }) => [
+            styles.managementCard,
+            pressed && styles.pressedCard,
+          ]}
           onPress={() => router.push("/admin/users")}
+          accessibilityRole="button"
+          accessibilityLabel="Open user approvals"
         >
           <View style={styles.managementIcon}>
-            <Ionicons name="person-add-outline" size={23} color={GREEN} />
+            <Ionicons name="people" size={25} color="#16794A" />
           </View>
 
-          <View style={styles.managementContent}>
-            <Text style={styles.managementTitle}>User approvals</Text>
+          <View style={styles.managementTextContainer}>
+            <Text style={styles.managementTitle}>User Approvals</Text>
+
             <Text style={styles.managementDescription}>
-              Review student and teacher accounts.
+              Review registrations and manage account access.
             </Text>
+
+            {stats.pendingUsers > 0 && (
+              <View style={styles.pendingBadge}>
+                <Text style={styles.pendingBadgeText}>
+                  {stats.pendingUsers} awaiting review
+                </Text>
+              </View>
+            )}
           </View>
 
-          <View style={styles.pendingBadge}>
-            <Text style={styles.pendingBadgeText}>{pendingUsers}</Text>
-          </View>
-
-          <Ionicons name="chevron-forward" size={20} color="#829187" />
+          <Ionicons name="chevron-forward" size={22} color="#7A8B80" />
         </Pressable>
 
-        <View style={styles.managementCard}>
-          <View style={styles.managementIcon}>
-            <Ionicons name="shield-outline" size={23} color={GREEN} />
+        {/* Admin account */}
+        <Text style={styles.sectionTitle}>Your Account</Text>
+
+        <View style={styles.accountCard}>
+          <View style={styles.accountAvatar}>
+            <Ionicons name="shield-checkmark" size={25} color="#16794A" />
           </View>
 
-          <View style={styles.managementContent}>
-            <Text style={styles.managementTitle}>Admin account</Text>
-            <Text style={styles.managementDescription}>
-              You are signed in with administrator access.
-            </Text>
-          </View>
+          <View style={styles.accountInfo}>
+            <Text style={styles.accountName}>{adminName}</Text>
 
-          <Ionicons name="checkmark-circle" size={23} color={GREEN} />
+            <Text style={styles.accountRole}>System Administrator</Text>
+
+            <View style={styles.accountStatus}>
+              <View style={styles.statusDot} />
+
+              <Text style={styles.statusText}>Authenticated</Text>
+            </View>
+          </View>
         </View>
 
-        <Pressable style={styles.refreshButton} onPress={loadDashboard}>
-          <Ionicons name="reload-outline" size={18} color={GREEN} />
-          <Text style={styles.refreshButtonText}>Refresh dashboard</Text>
-        </Pressable>
+        {/* Logout is managed by admin/_layout.tsx */}
+        <View style={styles.sidebarHint}>
+          <Ionicons
+            name="information-circle-outline"
+            size={19}
+            color="#16794A"
+          />
 
-        <Pressable
-          style={[styles.logoutButton, signingOut && { opacity: 0.6 }]}
-          onPress={handleLogout}
-          disabled={signingOut}
-        >
-          {signingOut ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <>
-              <Ionicons name="log-out-outline" size={20} color="#FFFFFF" />
-              <Text style={styles.logoutButtonText}>Log out</Text>
-            </>
-          )}
-        </Pressable>
+          <Text style={styles.sidebarHintText}>
+            Use the sidebar menu to access other admin pages and log out.
+          </Text>
+        </View>
 
-        <Text style={styles.footer}>
-          StudyMate AI · Learn smarter, one session at a time.
-        </Text>
+        <Text style={styles.footerText}>StudyMate AI · Administration</Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: BG,
-  },
-  loadingScreen: {
-    flex: 1,
-    backgroundColor: BG,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  loadingText: {
-    marginTop: 12,
-    color: "#63756A",
-    fontSize: 14,
-  },
   container: {
-    padding: 20,
-    paddingBottom: 35,
+    flex: 1,
+    backgroundColor: "#F4F8F5",
+  },
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 36,
+  },
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: "#F4F8F5",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  loadingIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    backgroundColor: "#E2F2E8",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loader: {
+    marginTop: 24,
+  },
+  loadingTitle: {
+    marginTop: 16,
+    fontSize: 19,
+    fontWeight: "700",
+    color: "#173D2A",
+  },
+  loadingSubtitle: {
+    marginTop: 7,
+    fontSize: 13,
+    color: "#718078",
+    textAlign: "center",
   },
   header: {
     flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 25,
+    marginBottom: 30,
+  },
+  brandContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
   },
   brandIcon: {
-    width: 48,
-    height: 48,
+    width: 47,
+    height: 47,
     borderRadius: 15,
-    backgroundColor: GREEN,
+    backgroundColor: "#16794A",
     alignItems: "center",
     justifyContent: "center",
   },
-  brandText: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  brandTitle: {
-    fontSize: 19,
+  brandName: {
+    fontSize: 18,
     fontWeight: "800",
-    color: DARK_GREEN,
+    color: "#173D2A",
   },
   brandSubtitle: {
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1.3,
-    color: "#718277",
     marginTop: 3,
+    fontSize: 10,
+    letterSpacing: 1.6,
+    fontWeight: "700",
+    color: "#6E8174",
   },
-  logoutIcon: {
+  refreshButton: {
     width: 43,
     height: 43,
     borderRadius: 14,
-    backgroundColor: "#E7F0E9",
-    alignItems: "center",
+    backgroundColor: "#E5F2E9",
     justifyContent: "center",
+    alignItems: "center",
   },
-  welcomeCard: {
-    backgroundColor: GREEN,
-    borderRadius: 24,
-    padding: 23,
+  pressedButton: {
+    opacity: 0.7,
+  },
+  disabledButton: {
+    opacity: 0.6,
+  },
+  welcomeSection: {
     marginBottom: 27,
   },
-  adminBadge: {
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "rgba(255,255,255,0.16)",
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 20,
-    marginBottom: 19,
-  },
-  adminBadgeText: {
-    color: "#FFFFFF",
-    fontSize: 10,
+  eyebrow: {
+    fontSize: 11,
+    letterSpacing: 1.8,
     fontWeight: "800",
-    letterSpacing: 1,
+    color: "#16794A",
+    marginBottom: 10,
   },
   welcomeTitle: {
     fontSize: 25,
-    fontWeight: "800",
-    color: "#FFFFFF",
+    fontWeight: "700",
+    color: "#183B29",
   },
   adminName: {
-    color: "#D8F0DF",
-    fontSize: 17,
-    fontWeight: "600",
-    marginTop: 5,
+    marginTop: 2,
+    fontSize: 29,
+    fontWeight: "800",
+    color: "#16794A",
   },
   welcomeDescription: {
-    color: "#E0F0E5",
-    fontSize: 13,
-    lineHeight: 20,
-    marginTop: 13,
-  },
-  sectionHeading: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 14,
+    marginTop: 11,
+    fontSize: 14,
+    lineHeight: 21,
+    color: "#718078",
   },
   sectionTitle: {
-    fontSize: 18,
+    marginBottom: 13,
+    marginTop: 5,
+    fontSize: 17,
     fontWeight: "800",
-    color: "#20392B",
-    marginBottom: 14,
+    color: "#203C2B",
   },
-  statsRow: {
+  statsContainer: {
     flexDirection: "row",
     gap: 12,
-    marginBottom: 28,
+    marginBottom: 25,
   },
   statCard: {
     flex: 1,
-    minWidth: 0,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 19,
+    minHeight: 174,
+    borderRadius: 20,
     padding: 15,
     borderWidth: 1,
-    borderColor: "#E5EDE7",
   },
-  statIcon: {
-    width: 43,
-    height: 43,
-    borderRadius: 14,
-    alignItems: "center",
+  totalCard: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E0ECE3",
+  },
+  pendingCard: {
+    backgroundColor: "#FFFCF5",
+    borderColor: "#F1E7CF",
+  },
+  totalIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: "#E5F4E9",
     justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 13,
+  },
+  pendingIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: "#FFF0CF",
+    justifyContent: "center",
+    alignItems: "center",
     marginBottom: 13,
   },
   statLabel: {
     fontSize: 12,
-    color: "#65776B",
     fontWeight: "600",
+    color: "#718078",
   },
-  statNumber: {
-    fontSize: 30,
+  statValue: {
+    marginTop: 5,
+    fontSize: 31,
     fontWeight: "800",
-    color: DARK_GREEN,
-    marginTop: 6,
+    color: "#16794A",
   },
-  statFootnote: {
+  pendingValue: {
+    marginTop: 5,
+    fontSize: 31,
+    fontWeight: "800",
+    color: "#B7791F",
+  },
+  statDescription: {
+    marginTop: 5,
     fontSize: 10,
-    color: "#859389",
-    marginTop: 4,
+    lineHeight: 15,
+    color: "#849087",
   },
   managementCard: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
     borderRadius: 18,
-    padding: 15,
-    marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#E5EDE7",
+    borderColor: "#E0ECE3",
+    padding: 16,
+    marginBottom: 24,
+    gap: 13,
+  },
+  pressedCard: {
+    opacity: 0.75,
   },
   managementIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
-    backgroundColor: "#E8F3EB",
-    alignItems: "center",
+    width: 49,
+    height: 49,
+    borderRadius: 15,
+    backgroundColor: "#E5F4E9",
     justifyContent: "center",
+    alignItems: "center",
   },
-  managementContent: {
+  managementTextContainer: {
     flex: 1,
-    marginLeft: 12,
-    marginRight: 5,
   },
   managementTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "800",
-    color: "#263D2E",
+    color: "#203C2B",
   },
   managementDescription: {
-    fontSize: 11,
-    lineHeight: 16,
-    color: "#758479",
-    marginTop: 4,
+    marginTop: 5,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#718078",
   },
   pendingBadge: {
-    minWidth: 27,
-    height: 27,
-    paddingHorizontal: 7,
-    borderRadius: 14,
-    backgroundColor: "#FFF0D8",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 8,
+    alignSelf: "flex-start",
+    backgroundColor: "#FFF0CF",
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginTop: 9,
   },
   pendingBadgeText: {
-    color: "#A9670D",
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  refreshButton: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 8,
-    padding: 14,
-    marginTop: 8,
-  },
-  refreshButtonText: {
-    color: GREEN,
-    fontSize: 14,
+    color: "#956417",
+    fontSize: 10,
     fontWeight: "700",
   },
-  logoutButton: {
-    minHeight: 52,
-    backgroundColor: DARK_GREEN,
-    borderRadius: 16,
+  accountCard: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 9,
-    marginTop: 5,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E0ECE3",
+    padding: 16,
+    marginBottom: 20,
   },
-  logoutButtonText: {
-    color: "#FFFFFF",
+  accountAvatar: {
+    width: 51,
+    height: 51,
+    borderRadius: 17,
+    backgroundColor: "#E5F4E9",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 13,
+  },
+  accountInfo: {
+    flex: 1,
+  },
+  accountName: {
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
+    color: "#203C2B",
   },
-  footer: {
+  accountRole: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#718078",
+  },
+  accountStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 8,
+    gap: 6,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: "#20A05A",
+  },
+  statusText: {
+    fontSize: 11,
+    color: "#27834D",
+    fontWeight: "600",
+  },
+  sidebarHint: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    padding: 13,
+    borderRadius: 14,
+    backgroundColor: "#EAF4ED",
+    marginTop: 2,
+  },
+  sidebarHintText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#42654E",
+  },
+  footerText: {
+    marginTop: 22,
     textAlign: "center",
     fontSize: 11,
-    color: "#859389",
-    marginTop: 24,
-    lineHeight: 17,
+    color: "#93A097",
   },
 });

@@ -1,14 +1,14 @@
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useMemo, useState } from "react";
+import { router } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Modal,
-  Platform,
+  FlatList,
+  Image,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,570 +16,954 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const GREEN = "#176B45";
-const DARK_GREEN = "#104D33";
-const BG = "#F4F8F5";
-const MONO = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
-
 type ApprovalStatus = "pending" | "approved" | "rejected";
 type UserRole = "student" | "teacher" | "admin";
+type FilterStatus = "all" | ApprovalStatus;
 
 type Profile = {
   id: string;
   full_name: string | null;
   student_id: string | null;
+  email: string | null;
+  avatar_path: string | null;
+  avatar_url: string | null;
   role: UserRole | null;
   requested_role: UserRole | null;
   approval_status: ApprovalStatus | null;
   created_at: string | null;
 };
 
-type FilterKey = "pending" | "approved" | "rejected" | "all";
+const USERS_PER_PAGE = 5;
 
-const FILTERS: { key: FilterKey; label: string }[] = [
-  { key: "pending", label: "Pending" },
-  { key: "approved", label: "Approved" },
-  { key: "rejected", label: "Rejected" },
-  { key: "all", label: "All" },
-];
-
-const STATUS_META: Record<
-  ApprovalStatus,
-  { bg: string; text: string; label: string; icon: keyof typeof Ionicons.glyphMap }
-> = {
-  pending: {
-    bg: "#FFF0D8",
-    text: "#A9670D",
-    label: "PENDING",
-    icon: "time-outline",
-  },
-  approved: {
-    bg: "#E2F1E7",
-    text: GREEN,
-    label: "APPROVED",
-    icon: "checkmark-circle-outline",
-  },
-  rejected: {
-    bg: "#FBE3E3",
-    text: "#B33A3A",
-    label: "REJECTED",
-    icon: "close-circle-outline",
-  },
+const COLORS = {
+  primary: "#16794A",
+  primaryDark: "#0E5E38",
+  primaryLight: "#E8F5EC",
+  background: "#F4F8F5",
+  white: "#FFFFFF",
+  text: "#172B20",
+  secondaryText: "#718078",
+  border: "#E0E9E2",
+  pending: "#B7791F",
+  pendingBg: "#FFF5D9",
+  approved: "#16834A",
+  approvedBg: "#E4F6E9",
+  rejected: "#C53030",
+  rejectedBg: "#FDE8E8",
+  danger: "#C53030",
 };
 
-function formatDate(value: string | null) {
-  if (!value) return "Unknown date";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unknown date";
-  return date.toLocaleDateString(undefined, {
-    year: "numeric",
+const FILTERS: { label: string; value: FilterStatus }[] = [
+  { label: "All Users", value: "all" },
+  { label: "Pending", value: "pending" },
+  { label: "Approved", value: "approved" },
+  { label: "Rejected", value: "rejected" },
+];
+
+function getStatus(profile: Profile): ApprovalStatus {
+  return profile.approval_status ?? "pending";
+}
+
+function getStatusColor(status: ApprovalStatus) {
+  switch (status) {
+    case "approved":
+      return COLORS.approved;
+    case "rejected":
+      return COLORS.rejected;
+    default:
+      return COLORS.pending;
+  }
+}
+
+function getStatusBackground(status: ApprovalStatus) {
+  switch (status) {
+    case "approved":
+      return COLORS.approvedBg;
+    case "rejected":
+      return COLORS.rejectedBg;
+    default:
+      return COLORS.pendingBg;
+  }
+}
+
+function formatDate(dateString: string | null) {
+  if (!dateString) return "Date unavailable";
+
+  const date = new Date(dateString);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Date unavailable";
+  }
+
+  return date.toLocaleDateString("en-PH", {
     month: "short",
     day: "numeric",
+    year: "numeric",
   });
 }
 
-async function fetchProfiles(): Promise<Profile[]> {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select(
-      "id, full_name, student_id, role, requested_role, approval_status, created_at",
-    )
-    .order("created_at", { ascending: false });
-
-  if (error) throw error;
-  return (data as Profile[]) ?? [];
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 export default function AdminUsersScreen() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<FilterKey>("pending");
   const [search, setSearch] = useState("");
-  const [processing, setProcessing] = useState<{
-    id: string;
-    action: ApprovalStatus;
-  } | null>(null);
-  const [reviewing, setReviewing] = useState<Profile | null>(null);
+  const [activeFilter, setActiveFilter] = useState<FilterStatus>("all");
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
 
-  useEffect(() => {
-    let active = true;
+  // Tracks which user's three-dot menu is currently open.
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-    fetchProfiles()
-      .then((data) => {
-        if (!active) return;
-        setProfiles(data);
-      })
-      .catch((error) => {
-        console.error("Load profiles error:", error);
-        if (!active) return;
-        Alert.alert(
-          "Unable to load accounts",
-          "Please check your connection and try again.",
-        );
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+  const fetchProfiles = useCallback(async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
 
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  async function handleRefresh() {
-    setRefreshing(true);
     try {
-      setProfiles(await fetchProfiles());
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        Alert.alert(
+          "Session Required",
+          "Please sign in to access user management.",
+        );
+        router.replace("/login");
+        return;
+      }
+
+      // Verify the signed-in user's actual role.
+      const { data: currentProfile, error: currentProfileError } =
+        await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .maybeSingle();
+
+      if (currentProfileError) {
+        console.error(
+          "Error checking admin role:",
+          currentProfileError.message,
+        );
+
+        Alert.alert(
+          "Unable to Verify Access",
+          "We could not verify your account permissions.",
+        );
+        return;
+      }
+
+      if (currentProfile?.role !== "admin") {
+        Alert.alert(
+          "Access Denied",
+          "Only administrators can manage user accounts.",
+        );
+        router.replace("/login");
+        return;
+      }
+
+      // Load user profiles, including email and photo storage path.
+      const { data, error } = await supabase
+        .from("profiles")
+        .select(
+          "id, full_name, student_id, email, avatar_path, role, requested_role, approval_status, created_at",
+        )
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("Error fetching profiles:", error.message);
+
+        Alert.alert(
+          "Unable to Load Users",
+          "Could not retrieve user accounts. Check that the email and avatar_path columns exist and that your Supabase Row Level Security policies allow administrators to read profiles.",
+        );
+        return;
+      }
+
+      // Create temporary URLs for photos stored in the private bucket.
+      const profilesWithPhotos: Profile[] = await Promise.all(
+        (data ?? []).map(async (profile) => {
+          let avatarUrl: string | null = null;
+
+          if (profile.avatar_path) {
+            const { data: signedImage, error: imageError } =
+              await supabase.storage
+                .from("profile-photos")
+                .createSignedUrl(profile.avatar_path, 3600);
+
+            if (imageError) {
+              console.warn(
+                `Could not load photo for ${profile.id}:`,
+                imageError.message,
+              );
+            } else {
+              avatarUrl = signedImage?.signedUrl ?? null;
+            }
+          }
+
+          return {
+            ...profile,
+            avatar_url: avatarUrl,
+          } as Profile;
+        }),
+      );
+
+      setProfiles(profilesWithPhotos);
     } catch (error) {
-      console.error("Refresh profiles error:", error);
+      console.error("Unexpected user management error:", error);
+
       Alert.alert(
-        "Unable to refresh accounts",
-        "Please check your connection and try again.",
+        "Something Went Wrong",
+        "An unexpected error occurred while loading users.",
       );
     } finally {
+      setLoading(false);
       setRefreshing(false);
     }
-  }
+  }, []);
 
-  // Administrators are managed at the database level, never through this screen.
-  const managedProfiles = useMemo(
-    () =>
-      profiles.filter(
-        (p) => p.role !== "admin" && p.requested_role !== "admin",
-      ),
-    [profiles],
-  );
+  useEffect(() => {
+    void fetchProfiles();
+  }, [fetchProfiles]);
 
-  const counts = useMemo(
-    () => ({
-      pending: managedProfiles.filter((p) => p.approval_status === "pending")
-        .length,
-      approved: managedProfiles.filter((p) => p.approval_status === "approved")
-        .length,
-      rejected: managedProfiles.filter((p) => p.approval_status === "rejected")
-        .length,
+  // Keep administrator accounts out of approval management.
+  const managedProfiles = useMemo(() => {
+    return profiles.filter(
+      (profile) =>
+        profile.role !== "admin" && profile.requested_role !== "admin",
+    );
+  }, [profiles]);
+
+  // Account counts are based on all managed profiles.
+  const counts = useMemo(() => {
+    return {
       all: managedProfiles.length,
-    }),
-    [managedProfiles],
-  );
+      pending: managedProfiles.filter(
+        (profile) => getStatus(profile) === "pending",
+      ).length,
+      approved: managedProfiles.filter(
+        (profile) => getStatus(profile) === "approved",
+      ).length,
+      rejected: managedProfiles.filter(
+        (profile) => getStatus(profile) === "rejected",
+      ).length,
+    };
+  }, [managedProfiles]);
 
+  // Apply search and status filtering before pagination.
   const visibleProfiles = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const searchTerm = search.trim().toLowerCase();
 
     return managedProfiles.filter((profile) => {
-      const matchesFilter =
-        filter === "all" || profile.approval_status === filter;
+      const status = getStatus(profile);
+      const matchesStatus = activeFilter === "all" || status === activeFilter;
 
-      if (!matchesFilter) return false;
-      if (!query) return true;
+      const searchableValues = [
+        profile.full_name,
+        profile.student_id,
+        profile.email,
+        profile.role,
+        profile.requested_role,
+      ];
 
-      return (
-        (profile.full_name ?? "").toLowerCase().includes(query) ||
-        (profile.student_id ?? "").toLowerCase().includes(query)
-      );
+      const matchesSearch =
+        !searchTerm ||
+        searchableValues.some((value) =>
+          (value ?? "").toLowerCase().includes(searchTerm),
+        );
+
+      return matchesStatus && matchesSearch;
     });
-  }, [managedProfiles, filter, search]);
+  }, [managedProfiles, activeFilter, search]);
 
-  async function applyStatus(profile: Profile, status: ApprovalStatus) {
-    setProcessing({ id: profile.id, action: status });
+  // Pagination calculations.
+  const totalPages = Math.max(
+    1,
+    Math.ceil(visibleProfiles.length / USERS_PER_PAGE),
+  );
 
-    try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({ approval_status: status })
-        .eq("id", profile.id);
+  const paginatedProfiles = useMemo(() => {
+    const startIndex = (currentPage - 1) * USERS_PER_PAGE;
 
-      if (error) throw error;
+    return visibleProfiles.slice(startIndex, startIndex + USERS_PER_PAGE);
+  }, [visibleProfiles, currentPage]);
 
-      setProfiles((current) =>
-        current.map((item) =>
-          item.id === profile.id ? { ...item, approval_status: status } : item,
-        ),
-      );
-      setReviewing((current) =>
-        current && current.id === profile.id
-          ? { ...current, approval_status: status }
-          : current,
-      );
-    } catch (error) {
-      console.error("Update status error:", error);
-      Alert.alert("Update failed", "We couldn't update this account.");
-    } finally {
-      setProcessing(null);
+  const startItem =
+    visibleProfiles.length === 0 ? 0 : (currentPage - 1) * USERS_PER_PAGE + 1;
+
+  const endItem = Math.min(
+    currentPage * USERS_PER_PAGE,
+    visibleProfiles.length,
+  );
+
+  // Return to the first page when the search or filter changes.
+  useEffect(() => {
+    setCurrentPage(1);
+    setOpenMenuId(null);
+  }, [search, activeFilter]);
+
+  // Keep the current page valid if the number of results decreases.
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
     }
-  }
+  }, [currentPage, totalPages]);
 
-  function confirmStatus(profile: Profile, status: ApprovalStatus) {
-    const isVerify = status === "approved";
-    const isReject = status === "rejected";
+  const updateApproval = useCallback(
+    (profile: Profile, nextStatus: ApprovalStatus) => {
+      const actionLabels: Record<ApprovalStatus, string> = {
+        approved: "approve",
+        rejected: "reject",
+        pending: "set back to pending",
+      };
 
-    const title = isVerify
-      ? "Approve this account?"
-      : isReject
-        ? "Reject this account?"
-        : "Move account back to pending?";
+      const actionLabel = actionLabels[nextStatus];
 
-    const message = isVerify
-      ? `Confirm that the details (including the Student / School ID) are correct before granting access to ${
-          profile.full_name ?? "this account"
-        }.`
-      : isReject
-        ? `${profile.full_name ?? "This account"} will not be able to sign in until it is approved.`
-        : `${profile.full_name ?? "This account"} will return to the pending queue.`;
+      Alert.alert(
+        capitalize(actionLabel),
+        `Are you sure you want to ${actionLabel} ${
+          profile.full_name || "this account"
+        }?`,
+        [
+          {
+            text: "Cancel",
+            style: "cancel",
+          },
+          {
+            text: capitalize(actionLabel),
+            style: nextStatus === "rejected" ? "destructive" : "default",
+            onPress: () => {
+              void (async () => {
+                setUpdatingId(profile.id);
 
-    Alert.alert(title, message, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: isVerify ? "Approve" : isReject ? "Reject" : "Set to pending",
-        style: isReject ? "destructive" : "default",
-        onPress: () => void applyStatus(profile, status),
-      },
-    ]);
-  }
+                try {
+                  const { data, error } = await supabase
+                    .from("profiles")
+                    .update({ approval_status: nextStatus })
+                    .eq("id", profile.id)
+                    .select("id, approval_status")
+                    .maybeSingle();
 
-  const renderStatusPill = (status: ApprovalStatus | null) => {
-    const meta = STATUS_META[status ?? "pending"] ?? STATUS_META.pending;
+                  if (error) {
+                    console.error(
+                      "Error updating approval status:",
+                      error.message,
+                    );
+
+                    Alert.alert(
+                      "Update Failed",
+                      "The account status could not be updated. Check your Supabase Row Level Security policies.",
+                    );
+                    return;
+                  }
+
+                  if (!data) {
+                    Alert.alert(
+                      "No Changes Made",
+                      "No profile was updated. Check that your administrator update policy allows this action.",
+                    );
+                    return;
+                  }
+
+                  setProfiles((currentProfiles) =>
+                    currentProfiles.map((item) =>
+                      item.id === profile.id
+                        ? {
+                            ...item,
+                            approval_status: nextStatus,
+                          }
+                        : item,
+                    ),
+                  );
+
+                  Alert.alert(
+                    "Success",
+                    `${profile.full_name || "The account"} has been ${
+                      nextStatus === "approved"
+                        ? "approved"
+                        : nextStatus === "rejected"
+                          ? "rejected"
+                          : "returned to pending status"
+                    }.`,
+                  );
+                } catch (error) {
+                  console.error("Unexpected update error:", error);
+
+                  Alert.alert(
+                    "Update Failed",
+                    "An unexpected error occurred. Please try again.",
+                  );
+                } finally {
+                  setUpdatingId(null);
+                }
+              })();
+            },
+          },
+        ],
+      );
+    },
+    [],
+  );
+
+  const renderProfile = ({ item }: { item: Profile }) => {
+    const status = getStatus(item);
+    const statusColor = getStatusColor(status);
+    const statusBackground = getStatusBackground(status);
+    const isUpdating = updatingId === item.id;
+    const isMenuOpen = openMenuId === item.id;
+
+    const displayRole = item.role ?? "student";
+    const requestedRole = item.requested_role;
+    const initial = (item.full_name?.trim().charAt(0) || "U").toUpperCase();
+
     return (
-      <View style={[styles.statusPill, { backgroundColor: meta.bg }]}>
-        <Ionicons name={meta.icon} size={11} color={meta.text} />
-        <Text style={[styles.statusPillText, { color: meta.text }]}>
-          {meta.label}
+      <View style={styles.userCard}>
+        <View style={styles.userTopRow}>
+          <View style={styles.avatar}>
+            {item.avatar_url ? (
+              <Image
+                source={{ uri: item.avatar_url }}
+                style={styles.avatarImage}
+                resizeMode="cover"
+                accessibilityLabel={`Profile photo of ${
+                  item.full_name || "user"
+                }`}
+              />
+            ) : (
+              <Text style={styles.avatarText}>{initial}</Text>
+            )}
+          </View>
+
+          <View style={styles.userInformation}>
+            <Text style={styles.userName} numberOfLines={2}>
+              {item.full_name || "Unnamed User"}
+            </Text>
+
+            <Text style={styles.studentId}>
+              {item.student_id
+                ? `Student ID: ${item.student_id}`
+                : "No student ID"}
+            </Text>
+
+            <View style={styles.emailRow}>
+              <Ionicons
+                name="mail-outline"
+                size={13}
+                color={COLORS.secondaryText}
+              />
+              <Text style={styles.emailText} numberOfLines={2}>
+                {item.email || "Email unavailable"}
+              </Text>
+            </View>
+
+            <Text style={styles.accountRole}>
+              Account role: {capitalize(displayRole)}
+            </Text>
+
+            {requestedRole && requestedRole !== displayRole && (
+              <Text style={styles.requestedRole}>
+                Originally requested: {capitalize(requestedRole)}
+              </Text>
+            )}
+          </View>
+
+          <View
+            style={[styles.statusBadge, { backgroundColor: statusBackground }]}
+          >
+            <View
+              style={[styles.statusDot, { backgroundColor: statusColor }]}
+            />
+            <Text style={[styles.statusText, { color: statusColor }]}>
+              {capitalize(status)}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.cardDivider} />
+
+        <View style={styles.dateRow}>
+          <Ionicons
+            name="calendar-outline"
+            size={15}
+            color={COLORS.secondaryText}
+          />
+          <Text style={styles.dateText}>
+            Registered {formatDate(item.created_at)}
+          </Text>
+        </View>
+
+        {/* Compact three-dot account actions menu */}
+        <View style={styles.cardActions}>
+          <Text style={styles.actionHint}>Account actions</Text>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`More actions for ${
+              item.full_name || "this user"
+            }`}
+            accessibilityState={{ expanded: isMenuOpen }}
+            disabled={isUpdating}
+            onPress={() =>
+              setOpenMenuId((current) => (current === item.id ? null : item.id))
+            }
+            style={({ pressed }) => [
+              styles.moreButton,
+              pressed && styles.buttonPressed,
+              isUpdating && styles.disabledButton,
+            ]}
+          >
+            {isUpdating ? (
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            ) : (
+              <Ionicons
+                name="ellipsis-vertical"
+                size={21}
+                color={COLORS.primary}
+              />
+            )}
+          </Pressable>
+        </View>
+
+        {isMenuOpen && !isUpdating && (
+          <View style={styles.actionMenu}>
+            {status !== "approved" && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setOpenMenuId(null);
+                  updateApproval(item, "approved");
+                }}
+                style={({ pressed }) => [
+                  styles.menuOption,
+                  pressed && styles.menuOptionPressed,
+                ]}
+              >
+                <Ionicons
+                  name="checkmark-circle-outline"
+                  size={19}
+                  color={COLORS.approved}
+                />
+                <Text style={styles.approveMenuText}>Approve Account</Text>
+              </Pressable>
+            )}
+
+            {status !== "rejected" && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setOpenMenuId(null);
+                  updateApproval(item, "rejected");
+                }}
+                style={({ pressed }) => [
+                  styles.menuOption,
+                  pressed && styles.menuOptionPressed,
+                ]}
+              >
+                <Ionicons
+                  name="close-circle-outline"
+                  size={19}
+                  color={COLORS.danger}
+                />
+                <Text style={styles.rejectMenuText}>Reject Account</Text>
+              </Pressable>
+            )}
+
+            {status !== "pending" && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setOpenMenuId(null);
+                  updateApproval(item, "pending");
+                }}
+                style={({ pressed }) => [
+                  styles.menuOption,
+                  pressed && styles.menuOptionPressed,
+                ]}
+              >
+                <Ionicons
+                  name="time-outline"
+                  size={19}
+                  color={COLORS.primary}
+                />
+                <Text style={styles.resetMenuText}>Set to Pending</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderPagination = () => {
+    if (visibleProfiles.length === 0) {
+      return null;
+    }
+
+    return (
+      <View style={styles.paginationContainer}>
+        <Text style={styles.paginationInfo}>
+          Showing {startItem}–{endItem} of {visibleProfiles.length}
         </Text>
+
+        <View style={styles.paginationButtons}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Previous page"
+            accessibilityState={{ disabled: currentPage === 1 }}
+            disabled={currentPage === 1}
+            onPress={() => {
+              setOpenMenuId(null);
+              setCurrentPage((page) => Math.max(1, page - 1));
+            }}
+            style={({ pressed }) => [
+              styles.paginationButton,
+              currentPage === 1 && styles.paginationButtonDisabled,
+              pressed && currentPage !== 1 && styles.buttonPressed,
+            ]}
+          >
+            <Ionicons
+              name="chevron-back"
+              size={17}
+              color={currentPage === 1 ? COLORS.secondaryText : COLORS.primary}
+            />
+            <Text
+              style={[
+                styles.paginationButtonText,
+                currentPage === 1 && styles.paginationButtonTextDisabled,
+              ]}
+            >
+              Previous
+            </Text>
+          </Pressable>
+
+          <View style={styles.pageIndicator}>
+            <Text style={styles.pageIndicatorText}>
+              {currentPage} / {totalPages}
+            </Text>
+          </View>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Next page"
+            accessibilityState={{ disabled: currentPage === totalPages }}
+            disabled={currentPage === totalPages}
+            onPress={() => {
+              setOpenMenuId(null);
+              setCurrentPage((page) => Math.min(totalPages, page + 1));
+            }}
+            style={({ pressed }) => [
+              styles.paginationButton,
+              currentPage === totalPages && styles.paginationButtonDisabled,
+              pressed && currentPage !== totalPages && styles.buttonPressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.paginationButtonText,
+                currentPage === totalPages &&
+                  styles.paginationButtonTextDisabled,
+              ]}
+            >
+              Next
+            </Text>
+            <Ionicons
+              name="chevron-forward"
+              size={17}
+              color={
+                currentPage === totalPages
+                  ? COLORS.secondaryText
+                  : COLORS.primary
+              }
+            />
+          </Pressable>
+        </View>
       </View>
     );
   };
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
-      <ScrollView
-        contentContainerStyle={styles.container}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => {
-              void handleRefresh();
+    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+            onPress={() => router.back()}
+            style={styles.backButton}
+          >
+            <Ionicons name="arrow-back" size={22} color={COLORS.text} />
+          </Pressable>
+
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.headerTitle}>User Management</Text>
+            <Text style={styles.headerSubtitle}>
+              Review and manage student and teacher accounts
+            </Text>
+          </View>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Refresh users"
+            disabled={refreshing}
+            onPress={() => {
+              setOpenMenuId(null);
+              void fetchProfiles(true);
             }}
-            tintColor={GREEN}
-          />
-        }
-      >
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryCard}>
-            <Text style={styles.summaryValue}>{counts.all}</Text>
-            <Text style={styles.summaryLabel}>Total accounts</Text>
-          </View>
-          <View style={styles.summaryCard}>
-            <Text style={[styles.summaryValue, { color: "#A9670D" }]}>
-              {counts.pending}
-            </Text>
-            <Text style={styles.summaryLabel}>Awaiting review</Text>
-          </View>
-          <View style={styles.summaryCard}>
-            <Text style={[styles.summaryValue, { color: GREEN }]}>
-              {counts.approved}
-            </Text>
-            <Text style={styles.summaryLabel}>Approved</Text>
-          </View>
+            style={styles.refreshButton}
+          >
+            {refreshing ? (
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            ) : (
+              <Ionicons
+                name="refresh-outline"
+                size={21}
+                color={COLORS.primary}
+              />
+            )}
+          </Pressable>
         </View>
 
-        <View style={styles.adminNote}>
-          <Ionicons name="shield-checkmark" size={15} color={GREEN} />
-          <Text style={styles.adminNoteText}>
-            Only student and teacher accounts appear here. Administrator accounts
-            are secured and managed separately.
-          </Text>
-        </View>
+        <FlatList
+          data={paginatedProfiles}
+          keyExtractor={(item) => item.id}
+          renderItem={renderProfile}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setOpenMenuId(null);
+                void fetchProfiles(true);
+              }}
+              tintColor={COLORS.primary}
+              colors={[COLORS.primary]}
+            />
+          }
+          ListHeaderComponent={
+            <View>
+              <View style={styles.summaryCard}>
+                <View style={styles.summaryIcon}>
+                  <Ionicons
+                    name="people-outline"
+                    size={25}
+                    color={COLORS.primary}
+                  />
+                </View>
 
-        <View style={styles.searchBox}>
-          <Ionicons name="search-outline" size={18} color="#829187" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search by name or Student ID"
-            placeholderTextColor="#9BA69F"
-            value={search}
-            onChangeText={setSearch}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="search"
-          />
-          {search.length > 0 && (
-            <Pressable onPress={() => setSearch("")} hitSlop={10}>
-              <Ionicons name="close-circle" size={18} color="#9BA69F" />
-            </Pressable>
-          )}
-        </View>
+                <View style={styles.summaryTextContainer}>
+                  <Text style={styles.summaryLabel}>Managed Accounts</Text>
+                  <Text style={styles.summaryValue}>{counts.all}</Text>
+                  <Text style={styles.summaryCaption}>
+                    Student and teacher profiles
+                  </Text>
+                </View>
+              </View>
 
-        <View style={styles.filterRow}>
-          {FILTERS.map((option) => {
-            const selected = filter === option.key;
-            return (
-              <Pressable
-                key={option.key}
-                onPress={() => setFilter(option.key)}
-                style={[styles.filterChip, selected && styles.filterChipActive]}
-              >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    selected && styles.filterChipTextActive,
-                  ]}
-                >
-                  {option.label}
-                </Text>
-                <View
-                  style={[
-                    styles.filterBadge,
-                    selected && styles.filterBadgeActive,
-                  ]}
-                >
-                  <Text
+              <View style={styles.statsRow}>
+                <View style={styles.statCard}>
+                  <View
                     style={[
-                      styles.filterBadgeText,
-                      selected && styles.filterBadgeTextActive,
+                      styles.statIcon,
+                      { backgroundColor: COLORS.pendingBg },
                     ]}
                   >
-                    {counts[option.key]}
-                  </Text>
+                    <Ionicons
+                      name="time-outline"
+                      size={18}
+                      color={COLORS.pending}
+                    />
+                  </View>
+                  <Text style={styles.statValue}>{counts.pending}</Text>
+                  <Text style={styles.statLabel}>Pending</Text>
                 </View>
-              </Pressable>
-            );
-          })}
-        </View>
 
-        {loading ? (
-          <View style={styles.centerBox}>
-            <ActivityIndicator size="large" color={GREEN} />
-            <Text style={styles.centerText}>Loading accounts...</Text>
-          </View>
-        ) : visibleProfiles.length === 0 ? (
-          <View style={styles.centerBox}>
-            <View style={styles.emptyIcon}>
-              <Ionicons name="people-outline" size={30} color={GREEN} />
+                <View style={styles.statCard}>
+                  <View
+                    style={[
+                      styles.statIcon,
+                      { backgroundColor: COLORS.approvedBg },
+                    ]}
+                  >
+                    <Ionicons
+                      name="checkmark-circle-outline"
+                      size={18}
+                      color={COLORS.approved}
+                    />
+                  </View>
+                  <Text style={styles.statValue}>{counts.approved}</Text>
+                  <Text style={styles.statLabel}>Approved</Text>
+                </View>
+
+                <View style={styles.statCard}>
+                  <View
+                    style={[
+                      styles.statIcon,
+                      { backgroundColor: COLORS.rejectedBg },
+                    ]}
+                  >
+                    <Ionicons
+                      name="close-circle-outline"
+                      size={18}
+                      color={COLORS.rejected}
+                    />
+                  </View>
+                  <Text style={styles.statValue}>{counts.rejected}</Text>
+                  <Text style={styles.statLabel}>Rejected</Text>
+                </View>
+              </View>
+
+              <Text style={styles.sectionTitle}>Account Directory</Text>
+              <Text style={styles.sectionSubtitle}>
+                Search by name, student ID, email, or role, and filter by
+                approval status.
+              </Text>
+
+              <View style={styles.searchContainer}>
+                <Ionicons
+                  name="search-outline"
+                  size={20}
+                  color={COLORS.secondaryText}
+                />
+                <TextInput
+                  value={search}
+                  onChangeText={setSearch}
+                  placeholder="Search name, ID, email, or role..."
+                  placeholderTextColor="#98A69D"
+                  style={styles.searchInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                  accessibilityLabel="Search user accounts"
+                />
+
+                {search.length > 0 && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear search"
+                    onPress={() => setSearch("")}
+                    hitSlop={8}
+                  >
+                    <Ionicons
+                      name="close-circle"
+                      size={19}
+                      color={COLORS.secondaryText}
+                    />
+                  </Pressable>
+                )}
+              </View>
+
+              <FlatList
+                data={FILTERS}
+                keyExtractor={(item) => item.value}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.filtersContainer}
+                renderItem={({ item: filter }) => {
+                  const selected = activeFilter === filter.value;
+                  const count = counts[filter.value];
+
+                  return (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      onPress={() => setActiveFilter(filter.value)}
+                      style={[
+                        styles.filterChip,
+                        selected && styles.filterChipSelected,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.filterText,
+                          selected && styles.filterTextSelected,
+                        ]}
+                      >
+                        {filter.label}
+                      </Text>
+
+                      <View
+                        style={[
+                          styles.filterCount,
+                          selected && styles.filterCountSelected,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.filterCountText,
+                            selected && styles.filterCountTextSelected,
+                          ]}
+                        >
+                          {count}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                }}
+              />
+
+              <View style={styles.resultsHeading}>
+                <Text style={styles.resultsTitle}>
+                  {activeFilter === "all"
+                    ? "All Accounts"
+                    : `${capitalize(activeFilter)} Accounts`}
+                </Text>
+                <Text style={styles.resultsCount}>
+                  {visibleProfiles.length} found
+                </Text>
+              </View>
             </View>
-            <Text style={styles.emptyTitle}>No accounts found</Text>
-            <Text style={styles.centerText}>
-              {search
-                ? "Try a different name or Student ID."
-                : `There are no ${filter === "all" ? "" : filter} accounts to display.`}
+          }
+          ListEmptyComponent={
+            loading ? (
+              <View style={styles.centerContainer}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+                <Text style={styles.loadingText}>Loading user accounts...</Text>
+              </View>
+            ) : (
+              <View style={styles.emptyContainer}>
+                <View style={styles.emptyIcon}>
+                  <Ionicons
+                    name="people-outline"
+                    size={32}
+                    color={COLORS.primary}
+                  />
+                </View>
+                <Text style={styles.emptyTitle}>No accounts found</Text>
+                <Text style={styles.emptyDescription}>
+                  {search.trim()
+                    ? "Try another name, student ID, email, or role."
+                    : activeFilter === "pending"
+                      ? "There are no accounts waiting for approval."
+                      : "No accounts match the selected filter."}
+                </Text>
+              </View>
+            )
+          }
+          ListFooterComponent={renderPagination}
+        />
+
+        {!loading && (
+          <View style={styles.footer}>
+            <Ionicons
+              name="shield-checkmark-outline"
+              size={15}
+              color={COLORS.secondaryText}
+            />
+            <Text style={styles.footerText}>
+              Administrator account controls
             </Text>
           </View>
-        ) : (
-          visibleProfiles.map((profile) => (
-            <Pressable
-              key={profile.id}
-              style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-              onPress={() => setReviewing(profile)}
-            >
-              <View style={styles.cardHeader}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>
-                    {(profile.full_name ?? "?").trim().charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-
-                <View style={styles.cardInfo}>
-                  <Text style={styles.name} numberOfLines={1}>
-                    {profile.full_name ?? "Unnamed account"}
-                  </Text>
-                  <Text style={styles.subText} numberOfLines={1}>
-                    Registered {formatDate(profile.created_at)}
-                  </Text>
-                </View>
-
-                {renderStatusPill(profile.approval_status)}
-              </View>
-
-              <View style={styles.metaRow}>
-                <View style={styles.idChip}>
-                  <Ionicons name="id-card-outline" size={14} color={DARK_GREEN} />
-                  <Text style={styles.idChipText} numberOfLines={1}>
-                    {profile.student_id ? profile.student_id : "No ID on record"}
-                  </Text>
-                </View>
-                <View style={styles.roleChip}>
-                  <Ionicons
-                    name={
-                      profile.requested_role === "teacher"
-                        ? "easel-outline"
-                        : "school-outline"
-                    }
-                    size={13}
-                    color="#65776B"
-                  />
-                  <Text style={styles.roleChipText}>
-                    {profile.requested_role
-                      ? profile.requested_role.charAt(0).toUpperCase() +
-                        profile.requested_role.slice(1)
-                      : "Student"}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.reviewHint}>
-                <Text style={styles.reviewHintText}>Tap to review details</Text>
-                <Ionicons name="chevron-forward" size={16} color="#829187" />
-              </View>
-            </Pressable>
-          ))
         )}
-      </ScrollView>
-
-      <Modal
-        visible={reviewing !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setReviewing(null)}
-      >
-        <View style={styles.modalBackdrop}>
-          {reviewing && (
-            <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Account review</Text>
-                <Pressable
-                  onPress={() => setReviewing(null)}
-                  hitSlop={12}
-                  accessibilityLabel="Close"
-                >
-                  <Ionicons name="close" size={22} color="#65776B" />
-                </Pressable>
-              </View>
-
-              <ScrollView
-                style={styles.modalScroll}
-                showsVerticalScrollIndicator={false}
-              >
-                <View style={styles.modalIdentity}>
-                  <View style={styles.modalAvatar}>
-                    <Text style={styles.modalAvatarText}>
-                      {(reviewing.full_name ?? "?")
-                        .trim()
-                        .charAt(0)
-                        .toUpperCase()}
-                    </Text>
-                  </View>
-                  <Text style={styles.modalName}>
-                    {reviewing.full_name ?? "Unnamed account"}
-                  </Text>
-                  {renderStatusPill(reviewing.approval_status)}
-                </View>
-
-                <Text style={styles.detailLabel}>STUDENT / SCHOOL ID</Text>
-                <View style={styles.idBox}>
-                  <Ionicons
-                    name="id-card-outline"
-                    size={20}
-                    color={DARK_GREEN}
-                  />
-                  <Text style={styles.idBoxText}>
-                    {reviewing.student_id
-                      ? reviewing.student_id
-                      : "Not provided"}
-                  </Text>
-                </View>
-                <Text style={styles.idNote}>
-                  Verify this ID against your official student or faculty records
-                  before approving.
-                </Text>
-
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailRowLabel}>Requested role</Text>
-                  <Text style={styles.detailRowValue}>
-                    {reviewing.requested_role
-                      ? reviewing.requested_role.charAt(0).toUpperCase() +
-                        reviewing.requested_role.slice(1)
-                      : "Student"}
-                  </Text>
-                </View>
-
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailRowLabel}>Registered</Text>
-                  <Text style={styles.detailRowValue}>
-                    {formatDate(reviewing.created_at)}
-                  </Text>
-                </View>
-
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailRowLabel}>Account ID</Text>
-                  <Text style={styles.detailRowValue} numberOfLines={1}>
-                    {reviewing.id}
-                  </Text>
-                </View>
-
-                <View style={styles.securityNote}>
-                  <Ionicons
-                    name="shield-checkmark-outline"
-                    size={16}
-                    color={GREEN}
-                  />
-                  <Text style={styles.securityNoteText}>
-                    Only approved accounts can sign in to StudyMate AI.
-                  </Text>
-                </View>
-              </ScrollView>
-
-              <View style={styles.modalActions}>
-                <Pressable
-                  style={[styles.modalBtn, styles.approveBtn]}
-                  onPress={() => confirmStatus(reviewing, "approved")}
-                  disabled={
-                    processing?.id === reviewing.id ||
-                    reviewing.approval_status === "approved"
-                  }
-                >
-                  {processing?.id === reviewing.id &&
-                  processing.action === "approved" ? (
-                    <ActivityIndicator size="small" color={GREEN} />
-                  ) : (
-                    <>
-                      <Ionicons name="checkmark" size={18} color={GREEN} />
-                      <Text style={styles.approveText}>Approve</Text>
-                    </>
-                  )}
-                </Pressable>
-
-                <Pressable
-                  style={[styles.modalBtn, styles.rejectBtn]}
-                  onPress={() => confirmStatus(reviewing, "rejected")}
-                  disabled={
-                    processing?.id === reviewing.id ||
-                    reviewing.approval_status === "rejected"
-                  }
-                >
-                  {processing?.id === reviewing.id &&
-                  processing.action === "rejected" ? (
-                    <ActivityIndicator size="small" color="#B33A3A" />
-                  ) : (
-                    <>
-                      <Ionicons name="close" size={18} color="#B33A3A" />
-                      <Text style={styles.rejectText}>Reject</Text>
-                    </>
-                  )}
-                </Pressable>
-              </View>
-
-              {reviewing.approval_status !== "pending" && (
-                <Pressable
-                  style={styles.resetButton}
-                  onPress={() => confirmStatus(reviewing, "pending")}
-                  disabled={processing?.id === reviewing.id}
-                >
-                  {processing?.id === reviewing.id &&
-                  processing.action === "pending" ? (
-                    <ActivityIndicator size="small" color="#65776B" />
-                  ) : (
-                    <>
-                      <Ionicons name="refresh" size={15} color="#65776B" />
-                      <Text style={styles.resetText}>Move back to pending</Text>
-                    </>
-                  )}
-                </Pressable>
-              )}
-            </View>
-          )}
-        </View>
-      </Modal>
+      </View>
     </SafeAreaView>
   );
 }
@@ -587,413 +971,508 @@ export default function AdminUsersScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: BG,
+    backgroundColor: COLORS.background,
   },
   container: {
-    padding: 20,
-    paddingBottom: 44,
-    gap: 14,
+    flex: 1,
+    backgroundColor: COLORS.background,
   },
-  summaryRow: {
+  header: {
     flexDirection: "row",
-    gap: 10,
+    alignItems: "center",
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 18,
+    backgroundColor: COLORS.white,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  backButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.background,
+    marginRight: 12,
+  },
+  headerTextContainer: {
+    flex: 1,
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: COLORS.text,
+  },
+  headerSubtitle: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: COLORS.secondaryText,
+    marginTop: 4,
+  },
+  refreshButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.primaryLight,
+    marginLeft: 8,
+  },
+  listContent: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 24,
+    flexGrow: 1,
   },
   summaryCard: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#E5EDE7",
+    flexDirection: "row",
     alignItems: "center",
+    padding: 19,
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 14,
   },
-  summaryValue: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: DARK_GREEN,
+  summaryIcon: {
+    width: 55,
+    height: 55,
+    borderRadius: 17,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 15,
+  },
+  summaryTextContainer: {
+    flex: 1,
   },
   summaryLabel: {
-    fontSize: 10,
-    color: "#758479",
+    fontSize: 13,
+    color: COLORS.secondaryText,
     fontWeight: "600",
-    marginTop: 4,
-    textAlign: "center",
   },
-  adminNote: {
+  summaryValue: {
+    fontSize: 29,
+    fontWeight: "800",
+    color: COLORS.text,
+    marginTop: 2,
+  },
+  summaryCaption: {
+    fontSize: 12,
+    color: COLORS.secondaryText,
+    marginTop: 2,
+  },
+  statsRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#E8F3EB",
-    borderRadius: 12,
-    padding: 12,
+    gap: 10,
+    marginBottom: 26,
   },
-  adminNoteText: {
+  statCard: {
     flex: 1,
-    fontSize: 11,
-    lineHeight: 16,
-    color: "#3F5A49",
+    minWidth: 0,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    backgroundColor: COLORS.white,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
-  searchBox: {
+  statIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  statValue: {
+    fontSize: 23,
+    fontWeight: "800",
+    color: COLORS.text,
+  },
+  statLabel: {
+    fontSize: 11,
+    color: COLORS.secondaryText,
+    marginTop: 3,
+    fontWeight: "600",
+  },
+  sectionTitle: {
+    fontSize: 19,
+    fontWeight: "800",
+    color: COLORS.text,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLORS.secondaryText,
+    marginTop: 5,
+    marginBottom: 15,
+  },
+  searchContainer: {
+    minHeight: 51,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
     paddingHorizontal: 14,
-    minHeight: 48,
     borderWidth: 1,
-    borderColor: "#E5EDE7",
+    borderColor: COLORS.border,
+    borderRadius: 15,
+    backgroundColor: COLORS.white,
+    gap: 10,
   },
   searchInput: {
     flex: 1,
-    fontSize: 14,
-    color: "#203C2D",
-    paddingVertical: 10,
+    minWidth: 0,
+    paddingVertical: 13,
+    fontSize: 13,
+    color: COLORS.text,
   },
-  filterRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  filtersContainer: {
+    paddingTop: 15,
+    paddingBottom: 20,
     gap: 8,
   },
   filterChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 13,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#FFFFFF",
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E5EDE7",
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.white,
+    gap: 7,
   },
-  filterChipActive: {
-    backgroundColor: GREEN,
-    borderColor: GREEN,
+  filterChipSelected: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
   },
-  filterChipText: {
+  filterText: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#52665A",
+    color: COLORS.secondaryText,
   },
-  filterChipTextActive: {
-    color: "#FFFFFF",
+  filterTextSelected: {
+    color: COLORS.white,
   },
-  filterBadge: {
-    minWidth: 20,
-    height: 20,
-    paddingHorizontal: 5,
-    borderRadius: 10,
-    backgroundColor: "#EEF4EF",
+  filterCount: {
+    minWidth: 21,
+    height: 21,
+    borderRadius: 7,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 5,
   },
-  filterBadgeActive: {
-    backgroundColor: "rgba(255,255,255,0.22)",
+  filterCountSelected: {
+    backgroundColor: "rgba(255,255,255,0.2)",
   },
-  filterBadgeText: {
+  filterCountText: {
     fontSize: 10,
     fontWeight: "800",
-    color: GREEN,
+    color: COLORS.secondaryText,
   },
-  filterBadgeTextActive: {
-    color: "#FFFFFF",
+  filterCountTextSelected: {
+    color: COLORS.white,
   },
-  centerBox: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 60,
-    gap: 8,
-  },
-  centerText: {
-    fontSize: 13,
-    color: "#758479",
-    textAlign: "center",
-    paddingHorizontal: 20,
-  },
-  emptyIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: "#E8F3EB",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 6,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: DARK_GREEN,
-  },
-  card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#E5EDE7",
-    shadowColor: "#0B2417",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  cardPressed: {
-    opacity: 0.9,
-  },
-  cardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  avatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 15,
-    backgroundColor: "#E8F3EB",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarText: {
-    fontSize: 19,
-    fontWeight: "800",
-    color: GREEN,
-  },
-  cardInfo: {
-    flex: 1,
-    marginLeft: 12,
-    marginRight: 8,
-  },
-  name: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#263D2E",
-  },
-  subText: {
-    fontSize: 12,
-    color: "#758479",
-    marginTop: 3,
-  },
-  statusPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 20,
-  },
-  statusPillText: {
-    fontSize: 9,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-  },
-  metaRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginTop: 13,
-    flexWrap: "wrap",
-  },
-  idChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "#EEF4EF",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-    maxWidth: "70%",
-  },
-  idChipText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: DARK_GREEN,
-    fontFamily: MONO,
-  },
-  roleChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: "#F4F8F5",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-  },
-  roleChipText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#65776B",
-  },
-  reviewHint: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 4,
-    marginTop: 12,
-  },
-  reviewHintText: {
-    fontSize: 11,
-    color: "#829187",
-    fontWeight: "600",
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(12,32,21,0.55)",
-    justifyContent: "center",
-    padding: 20,
-  },
-  modalCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 24,
-    padding: 20,
-    maxHeight: "88%",
-  },
-  modalHeader: {
+  resultsHeading: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 12,
   },
-  modalTitle: {
-    fontSize: 17,
+  resultsTitle: {
+    fontSize: 15,
     fontWeight: "800",
-    color: DARK_GREEN,
+    color: COLORS.text,
   },
-  modalScroll: {
-    flexGrow: 0,
+  resultsCount: {
+    fontSize: 12,
+    color: COLORS.secondaryText,
   },
-  modalIdentity: {
-    alignItems: "center",
-    gap: 9,
-    marginBottom: 18,
+  userCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 15,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
-  modalAvatar: {
-    width: 66,
-    height: 66,
-    borderRadius: 22,
-    backgroundColor: GREEN,
+  userTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  avatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    overflow: "hidden",
+    backgroundColor: COLORS.primaryLight,
     alignItems: "center",
     justifyContent: "center",
+    marginRight: 12,
   },
-  modalAvatarText: {
-    fontSize: 27,
+  avatarImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 15,
+  },
+  avatarText: {
+    fontSize: 19,
     fontWeight: "800",
-    color: "#FFFFFF",
+    color: COLORS.primary,
   },
-  modalName: {
-    fontSize: 18,
+  userInformation: {
+    flex: 1,
+    minWidth: 0,
+    paddingTop: 2,
+  },
+  userName: {
+    fontSize: 14,
     fontWeight: "800",
-    color: "#20392B",
-    textAlign: "center",
+    color: COLORS.text,
   },
-  detailLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 1,
-    color: "#829187",
-    marginBottom: 8,
+  studentId: {
+    fontSize: 11,
+    color: COLORS.secondaryText,
+    marginTop: 4,
   },
-  idBox: {
+  emailRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: "#EEF4EF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#D6E6DB",
-    paddingHorizontal: 14,
-    paddingVertical: 15,
+    gap: 5,
+    marginTop: 5,
   },
-  idBoxText: {
+  emailText: {
     flex: 1,
-    fontSize: 18,
-    fontWeight: "800",
-    color: DARK_GREEN,
-    fontFamily: MONO,
-    letterSpacing: 0.5,
-  },
-  idNote: {
+    minWidth: 0,
     fontSize: 11,
     lineHeight: 16,
-    color: "#829187",
-    marginTop: 8,
-    marginBottom: 8,
+    color: COLORS.secondaryText,
   },
-  detailRow: {
+  accountRole: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: COLORS.primary,
+    marginTop: 5,
+  },
+  requestedRole: {
+    fontSize: 10,
+    color: COLORS.secondaryText,
+    marginTop: 3,
+  },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 9,
+    marginLeft: 6,
+    gap: 5,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusText: {
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  cardDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginVertical: 14,
+  },
+  dateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginBottom: 14,
+  },
+  dateText: {
+    fontSize: 11,
+    color: COLORS.secondaryText,
+  },
+
+  // Three-dot action menu styles
+  cardActions: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEF2EF",
+    marginTop: 2,
   },
-  detailRowLabel: {
-    fontSize: 13,
-    color: "#758479",
+  actionHint: {
+    fontSize: 11,
     fontWeight: "600",
+    color: COLORS.secondaryText,
   },
-  detailRowValue: {
-    fontSize: 13,
-    color: "#20392B",
-    fontWeight: "700",
-    maxWidth: "60%",
-    textAlign: "right",
+  moreButton: {
+    width: 42,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: "#C7E5D0",
   },
-  securityNote: {
+  actionMenu: {
+    alignSelf: "flex-end",
+    width: 190,
+    marginTop: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 5,
+    borderRadius: 13,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  menuOption: {
+    minHeight: 43,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: "#E8F3EB",
-    borderRadius: 12,
-    padding: 12,
-    marginTop: 16,
-  },
-  securityNoteText: {
-    flex: 1,
-    fontSize: 11,
-    lineHeight: 16,
-    color: "#3F5A49",
-  },
-  modalActions: {
-    flexDirection: "row",
+    paddingHorizontal: 10,
+    borderRadius: 9,
     gap: 10,
-    marginTop: 16,
   },
-  modalBtn: {
-    flex: 1,
-    minHeight: 46,
+  menuOptionPressed: {
+    backgroundColor: COLORS.background,
+  },
+  approveMenuText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: COLORS.approved,
+  },
+  rejectMenuText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: COLORS.danger,
+  },
+  resetMenuText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: COLORS.primary,
+  },
+
+  buttonPressed: {
+    opacity: 0.75,
+  },
+  disabledButton: {
+    opacity: 0.6,
+  },
+  centerContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 45,
+  },
+  loadingText: {
+    fontSize: 13,
+    color: COLORS.secondaryText,
+    marginTop: 12,
+  },
+  emptyContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 25,
+    paddingVertical: 35,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  emptyIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.primaryLight,
+    marginBottom: 15,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: COLORS.text,
+  },
+  emptyDescription: {
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
+    color: COLORS.secondaryText,
+    marginTop: 7,
+  },
+  paginationContainer: {
+    paddingVertical: 16,
+    paddingHorizontal: 2,
+    marginBottom: 8,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    gap: 12,
+  },
+  paginationInfo: {
+    textAlign: "center",
+    color: COLORS.secondaryText,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  paginationButtons: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    borderRadius: 13,
+    gap: 8,
+  },
+  paginationButton: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderRadius: 11,
     borderWidth: 1,
+    borderColor: "#C7E5D0",
+    backgroundColor: COLORS.white,
+    gap: 3,
   },
-  approveBtn: {
-    backgroundColor: "#E2F1E7",
-    borderColor: "#CDE7D6",
+  paginationButtonDisabled: {
+    backgroundColor: "#F0F3F1",
+    borderColor: COLORS.border,
+    opacity: 0.8,
   },
-  approveText: {
-    color: GREEN,
-    fontSize: 14,
+  paginationButtonText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: COLORS.primary,
+  },
+  paginationButtonTextDisabled: {
+    color: COLORS.secondaryText,
+  },
+  pageIndicator: {
+    minWidth: 66,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    backgroundColor: COLORS.primaryLight,
+  },
+  pageIndicatorText: {
+    fontSize: 12,
     fontWeight: "800",
+    color: COLORS.primaryDark,
   },
-  rejectBtn: {
-    backgroundColor: "#FBE3E3",
-    borderColor: "#F1CCCC",
-  },
-  rejectText: {
-    color: "#B33A3A",
-    fontSize: 14,
-    fontWeight: "800",
-  },
-  resetButton: {
+  footer: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 7,
-    paddingVertical: 12,
-    marginTop: 4,
+    paddingVertical: 11,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.white,
   },
-  resetText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#65776B",
+  footerText: {
+    fontSize: 11,
+    color: COLORS.secondaryText,
   },
 });
