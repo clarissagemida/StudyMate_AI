@@ -38,24 +38,11 @@ export default function RegisterScreen() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Password must have at least 8 characters and all four character types.
   const passwordChecks = [
-    {
-      label: "At least 8 characters",
-      valid: password.length >= 8,
-    },
-    {
-      label: "One uppercase letter (A–Z)",
-      valid: /[A-Z]/.test(password),
-    },
-    {
-      label: "One lowercase letter (a–z)",
-      valid: /[a-z]/.test(password),
-    },
-    {
-      label: "One number (0–9)",
-      valid: /[0-9]/.test(password),
-    },
+    { label: "At least 8 characters", valid: password.length >= 8 },
+    { label: "One uppercase letter (A–Z)", valid: /[A-Z]/.test(password) },
+    { label: "One lowercase letter (a–z)", valid: /[a-z]/.test(password) },
+    { label: "One number (0–9)", valid: /[0-9]/.test(password) },
     {
       label: "One special character (!@#$...)",
       valid: /[^A-Za-z0-9]/.test(password),
@@ -83,7 +70,6 @@ export default function RegisterScreen() {
         ? "#B7791F"
         : "#D64545";
 
-  // Select a profile photo from the phone's gallery.
   const pickProfilePhoto = async () => {
     if (loading) return;
 
@@ -122,7 +108,6 @@ export default function RegisterScreen() {
       setAvatarMimeType(photo.mimeType ?? "image/jpeg");
     } catch (error) {
       console.error("Photo selection failed:", error);
-
       Alert.alert(
         "Unable to Select Photo",
         "Please try choosing your photo again.",
@@ -202,7 +187,13 @@ export default function RegisterScreen() {
         const errorCode =
           (error as { code?: string }).code?.toLowerCase() ?? "";
 
-        // Detect explicit duplicate-email responses from Supabase.
+        // Log diagnostic details in the VS Code terminal.
+        console.error("Supabase registration error:", {
+          message: error.message,
+          code: errorCode || "No error code provided",
+          status: error.status,
+        });
+
         if (
           errorCode === "user_already_exists" ||
           message.includes("user already registered") ||
@@ -213,12 +204,9 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Email Already Registered",
-            "This email may already have a StudyMate AI account. Please log in using this email or register with a different email address.",
+            "This email may already have an account. Try logging in or use a different email address.",
             [
-              {
-                text: "Use Another Email",
-                style: "cancel",
-              },
+              { text: "Cancel", style: "cancel" },
               {
                 text: "Go to Login",
                 onPress: () => router.replace("/login"),
@@ -227,11 +215,12 @@ export default function RegisterScreen() {
           );
         } else if (
           message.includes("duplicate key") ||
-          message.includes("unique constraint")
+          message.includes("unique constraint") ||
+          errorCode === "23505"
         ) {
           Alert.alert(
             "Information Already Exists",
-            "Your Student / School ID or another unique field may already be registered. Please check your details.",
+            "Your Student / School ID or another unique field may already be registered. Check your details. If this continues, check the profiles table and database trigger in Supabase.",
           );
         } else if (
           message.includes("over_email_send_rate_limit") ||
@@ -239,12 +228,13 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Too Many Attempts",
-            "Too many registration attempts were made. Please wait a few minutes before trying again.",
+            "Supabase has limited registration attempts. Please wait before trying again. Check your Supabase Auth email limits if this keeps happening.",
           );
         } else if (
           message.includes("email_address_invalid") ||
           message.includes("validation_failed") ||
-          message.includes("invalid format")
+          message.includes("invalid format") ||
+          message.includes("invalid email")
         ) {
           Alert.alert(
             "Invalid Email",
@@ -252,41 +242,63 @@ export default function RegisterScreen() {
           );
         } else if (
           message.includes("weak_password") ||
-          message.includes("password should")
+          message.includes("password should") ||
+          message.includes("password is too")
         ) {
           Alert.alert(
             "Password Rejected",
             "Supabase rejected this password. Use at least 8 characters with uppercase and lowercase letters, a number, and a special character. Your Supabase password policy may require additional rules.",
           );
+        } else if (
+          message.includes("database error saving new user") ||
+          message.includes("error creating user")
+        ) {
+          Alert.alert(
+            "Database Registration Error",
+            "Supabase Auth could not finish creating your account. Check your database trigger and profiles table in Supabase. The exact error is also logged in your VS Code terminal.",
+          );
+        } else if (
+          message.includes("network request failed") ||
+          message.includes("failed to fetch") ||
+          message.includes("network")
+        ) {
+          Alert.alert(
+            "Connection Problem",
+            "Unable to connect to Supabase. Check your internet connection and the project URL in your Supabase configuration.",
+          );
         } else {
-          console.error("Registration failed:", error.message);
-
           Alert.alert(
             "Registration Failed",
-            "We couldn't create your account. Please try again.",
+            `${error.message}\n\nError code: ${errorCode || "Not provided"}\n\nIf this mentions a database, profile, permission, or trigger, check your Supabase configuration.`,
           );
         }
 
         return;
       }
 
-      // A successful response does not always prove that a new account
-      // was created. Supabase may conceal existing accounts when email
-      // confirmation is enabled to protect user privacy.
+      if (!data.user) {
+        Alert.alert(
+          "Registration Incomplete",
+          "Supabase did not return a user account. Please try again.",
+        );
+        return;
+      }
+
       const emailConfirmationRequired = !data.session;
       let photoUploaded = false;
 
-      // Upload the photo only when an authenticated session is available.
+      // Upload a photo only when a session is available.
       if (data.session && data.user && avatarUri) {
-        const photoPath = `${data.user.id}/profile-${Date.now()}.${
+        const extension =
           avatarMimeType === "image/png"
             ? "png"
             : avatarMimeType === "image/webp"
               ? "webp"
               : avatarMimeType === "image/heic"
                 ? "heic"
-                : "jpg"
-        }`;
+                : "jpg";
+
+        const photoPath = `${data.user.id}/profile-${Date.now()}.${extension}`;
 
         try {
           const response = await fetch(avatarUri);
@@ -305,9 +317,7 @@ export default function RegisterScreen() {
               upsert: false,
             });
 
-          if (uploadError) {
-            throw uploadError;
-          }
+          if (uploadError) throw uploadError;
 
           const { error: profileError } = await supabase
             .from("profiles")
@@ -332,7 +342,7 @@ export default function RegisterScreen() {
         }
       }
 
-      // Clear the temporary session so the user follows the normal login flow.
+      // End the temporary session and preserve the normal login flow.
       if (data.session) {
         const { error: signOutError } = await supabase.auth.signOut();
 
@@ -348,7 +358,7 @@ export default function RegisterScreen() {
 
       if (emailConfirmationRequired) {
         resultMessage =
-          "If this email can be registered, follow the confirmation instructions sent to your inbox. If the address already has an account, please log in instead. You can upload your profile photo after confirming your email and signing in.";
+          "Your registration request was received. If email confirmation is enabled, check your inbox for instructions. If you do not receive an email, check your Supabase Auth settings. You can upload your profile photo after signing in.";
       } else if (avatarUri && photoUploaded) {
         resultMessage =
           "Your account was created and your profile photo was saved. You can now sign in, subject to any required administrator approval.";
@@ -406,7 +416,6 @@ export default function RegisterScreen() {
               <View style={styles.logoCircle}>
                 <Ionicons name="school-outline" size={30} color={GREEN} />
               </View>
-
               <Text style={styles.title}>Create account</Text>
               <Text style={styles.subtitle}>
                 Your learning journey starts here.
@@ -438,7 +447,6 @@ export default function RegisterScreen() {
                       />
                     </View>
                   )}
-
                   <View style={styles.photoEditBadge}>
                     <Ionicons name="camera" size={15} color="#FFFFFF" />
                   </View>

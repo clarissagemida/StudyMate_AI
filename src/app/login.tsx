@@ -73,11 +73,13 @@ export default function LoginScreen() {
 
         return;
       }
-
       switch (profile.role) {
         case "student":
+          router.replace("/student");
+          break;
+
         case "teacher":
-          router.replace("/home");
+          router.replace("/teacher");
           break;
 
         case "admin":

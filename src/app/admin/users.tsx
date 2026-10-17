@@ -114,8 +114,6 @@ export default function AdminUsersScreen() {
   const [activeFilter, setActiveFilter] = useState<FilterStatus>("all");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-
-  // Tracks which user's three-dot menu is currently open.
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const fetchProfiles = useCallback(async (isRefresh = false) => {
@@ -131,6 +129,13 @@ export default function AdminUsersScreen() {
         error: authError,
       } = await supabase.auth.getUser();
 
+      console.log("[AdminUsers] Authenticated user ID:", user?.id ?? null);
+      console.log("[AdminUsers] Authenticated email:", user?.email ?? null);
+
+      if (authError) {
+        console.error("[AdminUsers] Authentication error:", authError);
+      }
+
       if (authError || !user) {
         Alert.alert(
           "Session Required",
@@ -140,7 +145,6 @@ export default function AdminUsersScreen() {
         return;
       }
 
-      // Verify the signed-in user's actual role.
       const { data: currentProfile, error: currentProfileError } =
         await supabase
           .from("profiles")
@@ -148,10 +152,19 @@ export default function AdminUsersScreen() {
           .eq("id", user.id)
           .maybeSingle();
 
+      console.log(
+        "[AdminUsers] Current profile role:",
+        currentProfile?.role ?? null,
+      );
+      console.log(
+        "[AdminUsers] Profile lookup error:",
+        currentProfileError?.message ?? null,
+      );
+
       if (currentProfileError) {
         console.error(
-          "Error checking admin role:",
-          currentProfileError.message,
+          "[AdminUsers] Error checking admin role:",
+          currentProfileError,
         );
 
         Alert.alert(
@@ -170,7 +183,6 @@ export default function AdminUsersScreen() {
         return;
       }
 
-      // Load user profiles, including email and photo storage path.
       const { data, error } = await supabase
         .from("profiles")
         .select(
@@ -188,7 +200,6 @@ export default function AdminUsersScreen() {
         return;
       }
 
-      // Create temporary URLs for photos stored in the private bucket.
       const profilesWithPhotos: Profile[] = await Promise.all(
         (data ?? []).map(async (profile) => {
           let avatarUrl: string | null = null;
@@ -234,7 +245,6 @@ export default function AdminUsersScreen() {
     void fetchProfiles();
   }, [fetchProfiles]);
 
-  // Keep administrator accounts out of approval management.
   const managedProfiles = useMemo(() => {
     return profiles.filter(
       (profile) =>
@@ -242,7 +252,6 @@ export default function AdminUsersScreen() {
     );
   }, [profiles]);
 
-  // Account counts are based on all managed profiles.
   const counts = useMemo(() => {
     return {
       all: managedProfiles.length,
@@ -258,7 +267,6 @@ export default function AdminUsersScreen() {
     };
   }, [managedProfiles]);
 
-  // Apply search and status filtering before pagination.
   const visibleProfiles = useMemo(() => {
     const searchTerm = search.trim().toLowerCase();
 
@@ -284,7 +292,6 @@ export default function AdminUsersScreen() {
     });
   }, [managedProfiles, activeFilter, search]);
 
-  // Pagination calculations.
   const totalPages = Math.max(
     1,
     Math.ceil(visibleProfiles.length / USERS_PER_PAGE),
@@ -304,13 +311,11 @@ export default function AdminUsersScreen() {
     visibleProfiles.length,
   );
 
-  // Return to the first page when the search or filter changes.
   useEffect(() => {
     setCurrentPage(1);
     setOpenMenuId(null);
   }, [search, activeFilter]);
 
-  // Keep the current page valid if the number of results decreases.
   useEffect(() => {
     if (currentPage > totalPages) {
       setCurrentPage(totalPages);
@@ -353,14 +358,26 @@ export default function AdminUsersScreen() {
                     .maybeSingle();
 
                   if (error) {
-                    console.error(
-                      "Error updating approval status:",
-                      error.message,
-                    );
+                    console.error("[AdminUsers] Approval update error:", {
+                      message: error.message,
+                      code: error.code,
+                      details: error.details,
+                      hint: error.hint,
+                    });
+
+                    const errorCode = error.code
+                      ? `\n\nCode: ${error.code}`
+                      : "";
+                    const errorDetails = error.details
+                      ? `\n\nDetails: ${error.details}`
+                      : "";
+                    const errorHint = error.hint
+                      ? `\n\nHint: ${error.hint}`
+                      : "";
 
                     Alert.alert(
                       "Update Failed",
-                      "The account status could not be updated. Check your Supabase Row Level Security policies.",
+                      `${error.message}${errorCode}${errorDetails}${errorHint}`,
                     );
                     return;
                   }
@@ -412,7 +429,6 @@ export default function AdminUsersScreen() {
     },
     [],
   );
-
   const renderProfile = ({ item }: { item: Profile }) => {
     const status = getStatus(item);
     const statusColor = getStatusColor(status);
@@ -500,7 +516,6 @@ export default function AdminUsersScreen() {
           </Text>
         </View>
 
-        {/* Compact three-dot account actions menu */}
         <View style={styles.cardActions}>
           <Text style={styles.actionHint}>Account actions</Text>
 
@@ -822,10 +837,6 @@ export default function AdminUsersScreen() {
               </View>
 
               <Text style={styles.sectionTitle}>Account Directory</Text>
-              <Text style={styles.sectionSubtitle}>
-                Search by name, student ID, email, or role, and filter by
-                approval status.
-              </Text>
 
               <View style={styles.searchContainer}>
                 <Ionicons
@@ -836,21 +847,18 @@ export default function AdminUsersScreen() {
                 <TextInput
                   value={search}
                   onChangeText={setSearch}
-                  placeholder="Search name, ID, email, or role..."
-                  placeholderTextColor="#98A69D"
+                  placeholder="Search name, email, or student ID"
+                  placeholderTextColor={COLORS.secondaryText}
                   style={styles.searchInput}
                   autoCapitalize="none"
-                  autoCorrect={false}
                   returnKeyType="search"
-                  accessibilityLabel="Search user accounts"
                 />
-
                 {search.length > 0 && (
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Clear search"
                     onPress={() => setSearch("")}
-                    hitSlop={8}
+                    style={styles.clearSearchButton}
                   >
                     <Ionicons
                       name="close-circle"
@@ -861,45 +869,40 @@ export default function AdminUsersScreen() {
                 )}
               </View>
 
-              <FlatList
-                data={FILTERS}
-                keyExtractor={(item) => item.value}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.filtersContainer}
-                renderItem={({ item: filter }) => {
+              <View style={styles.filtersContainer}>
+                {FILTERS.map((filter) => {
                   const selected = activeFilter === filter.value;
                   const count = counts[filter.value];
 
                   return (
                     <Pressable
+                      key={filter.value}
                       accessibilityRole="button"
                       accessibilityState={{ selected }}
                       onPress={() => setActiveFilter(filter.value)}
                       style={[
-                        styles.filterChip,
-                        selected && styles.filterChipSelected,
+                        styles.filterButton,
+                        selected && styles.filterButtonActive,
                       ]}
                     >
                       <Text
                         style={[
                           styles.filterText,
-                          selected && styles.filterTextSelected,
+                          selected && styles.filterTextActive,
                         ]}
                       >
                         {filter.label}
                       </Text>
-
                       <View
                         style={[
                           styles.filterCount,
-                          selected && styles.filterCountSelected,
+                          selected && styles.filterCountActive,
                         ]}
                       >
                         <Text
                           style={[
                             styles.filterCountText,
-                            selected && styles.filterCountTextSelected,
+                            selected && styles.filterCountTextActive,
                           ]}
                         >
                           {count}
@@ -907,67 +910,71 @@ export default function AdminUsersScreen() {
                       </View>
                     </Pressable>
                   );
-                }}
-              />
+                })}
+              </View>
 
-              <View style={styles.resultsHeading}>
+              <View style={styles.resultsHeader}>
                 <Text style={styles.resultsTitle}>
                   {activeFilter === "all"
                     ? "All Accounts"
                     : `${capitalize(activeFilter)} Accounts`}
                 </Text>
                 <Text style={styles.resultsCount}>
-                  {visibleProfiles.length} found
+                  {visibleProfiles.length}{" "}
+                  {visibleProfiles.length === 1 ? "account" : "accounts"}
                 </Text>
               </View>
             </View>
           }
           ListEmptyComponent={
-            loading ? (
-              <View style={styles.centerContainer}>
+            <View style={styles.emptyContainer}>
+              {loading ? (
                 <ActivityIndicator size="large" color={COLORS.primary} />
-                <Text style={styles.loadingText}>Loading user accounts...</Text>
-              </View>
-            ) : (
-              <View style={styles.emptyContainer}>
-                <View style={styles.emptyIcon}>
-                  <Ionicons
-                    name="people-outline"
-                    size={32}
-                    color={COLORS.primary}
-                  />
-                </View>
-                <Text style={styles.emptyTitle}>No accounts found</Text>
-                <Text style={styles.emptyDescription}>
-                  {search.trim()
-                    ? "Try another name, student ID, email, or role."
-                    : activeFilter === "pending"
-                      ? "There are no accounts waiting for approval."
-                      : "No accounts match the selected filter."}
-                </Text>
-              </View>
-            )
+              ) : (
+                <>
+                  <View style={styles.emptyIcon}>
+                    <Ionicons
+                      name="people-outline"
+                      size={32}
+                      color={COLORS.secondaryText}
+                    />
+                  </View>
+                  <Text style={styles.emptyTitle}>
+                    {search.trim() || activeFilter !== "all"
+                      ? "No Matching Accounts"
+                      : "No User Accounts Yet"}
+                  </Text>
+                  <Text style={styles.emptyMessage}>
+                    {search.trim() || activeFilter !== "all"
+                      ? "Try a different search term or status filter."
+                      : "Student and teacher accounts will appear here."}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setSearch("");
+                      setActiveFilter("all");
+                      void fetchProfiles(true);
+                    }}
+                    style={styles.emptyButton}
+                  >
+                    <Text style={styles.emptyButtonText}>Refresh List</Text>
+                  </Pressable>
+                </>
+              )}
+            </View>
           }
-          ListFooterComponent={renderPagination}
+          ListFooterComponent={
+            <View>
+              {renderPagination()}
+              <View style={styles.footerSpace} />
+            </View>
+          }
         />
-
-        {!loading && (
-          <View style={styles.footer}>
-            <Ionicons
-              name="shield-checkmark-outline"
-              size={15}
-              color={COLORS.secondaryText}
-            />
-            <Text style={styles.footerText}>
-              Administrator account controls
-            </Text>
-          </View>
-        )}
       </View>
     </SafeAreaView>
   );
 }
-
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -1101,13 +1108,7 @@ const styles = StyleSheet.create({
     fontSize: 19,
     fontWeight: "800",
     color: COLORS.text,
-  },
-  sectionSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: COLORS.secondaryText,
-    marginTop: 5,
-    marginBottom: 15,
+    marginBottom: 14,
   },
   searchContainer: {
     minHeight: 51,
@@ -1127,32 +1128,37 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.text,
   },
+  clearSearchButton: {
+    padding: 3,
+  },
   filtersContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
     paddingTop: 15,
     paddingBottom: 20,
     gap: 8,
   },
-  filterChip: {
+  filterButton: {
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 9,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.white,
-    gap: 7,
+    gap: 6,
   },
-  filterChipSelected: {
+  filterButtonActive: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
   },
   filterText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
     color: COLORS.secondaryText,
   },
-  filterTextSelected: {
+  filterTextActive: {
     color: COLORS.white,
   },
   filterCount: {
@@ -1164,7 +1170,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     paddingHorizontal: 5,
   },
-  filterCountSelected: {
+  filterCountActive: {
     backgroundColor: "rgba(255,255,255,0.2)",
   },
   filterCountText: {
@@ -1172,10 +1178,10 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: COLORS.secondaryText,
   },
-  filterCountTextSelected: {
+  filterCountTextActive: {
     color: COLORS.white,
   },
-  resultsHeading: {
+  resultsHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1294,8 +1300,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.secondaryText,
   },
-
-  // Three-dot action menu styles
   cardActions: {
     flexDirection: "row",
     alignItems: "center",
@@ -1354,22 +1358,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: COLORS.primary,
   },
-
   buttonPressed: {
     opacity: 0.75,
   },
   disabledButton: {
     opacity: 0.6,
-  },
-  centerContainer: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 45,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: COLORS.secondaryText,
-    marginTop: 12,
   },
   emptyContainer: {
     alignItems: "center",
@@ -1395,12 +1388,24 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: COLORS.text,
   },
-  emptyDescription: {
+  emptyMessage: {
     fontSize: 12,
     lineHeight: 18,
     textAlign: "center",
     color: COLORS.secondaryText,
     marginTop: 7,
+  },
+  emptyButton: {
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 11,
+    backgroundColor: COLORS.primaryLight,
+  },
+  emptyButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: COLORS.primary,
   },
   paginationContainer: {
     paddingVertical: 16,
@@ -1461,18 +1466,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: COLORS.primaryDark,
   },
-  footer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-    paddingVertical: 11,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    backgroundColor: COLORS.white,
-  },
-  footerText: {
-    fontSize: 11,
-    color: COLORS.secondaryText,
+  footerSpace: {
+    height: 20,
   },
 });
