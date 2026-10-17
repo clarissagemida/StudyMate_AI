@@ -18,6 +18,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 type DashboardStats = {
   totalUsers: number;
   pendingUsers: number;
+  students: number;
+  teachers: number;
 };
 
 type DashboardError = {
@@ -35,44 +37,34 @@ export default function AdminHomeScreen() {
   const [stats, setStats] = useState<DashboardStats>({
     totalUsers: 0,
     pendingUsers: 0,
+    students: 0,
+    teachers: 0,
   });
 
   const loadDashboard = useCallback(async () => {
     try {
-      // 1. Verify the current authenticated user.
+      // Verify the current authenticated user.
       const {
         data: { user },
         error: authError,
       } = await supabase.auth.getUser();
 
-      if (authError) {
-        throw authError;
-      }
+      if (authError) throw authError;
 
       if (!user) {
         router.replace("/login");
         return;
       }
 
-      // 2. Load the administrator's profile.
+      // Load and verify the administrator's profile.
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("full_name, role, approval_status")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (profileError) {
-        console.error("Admin profile query failed:", {
-          message: profileError.message,
-          code: profileError.code,
-          details: profileError.details,
-          hint: profileError.hint,
-        });
+      if (profileError) throw profileError;
 
-        throw profileError;
-      }
-
-      // 3. Ensure this account has administrator access.
       if (
         profile?.role !== "admin" ||
         profile?.approval_status !== "approved"
@@ -82,52 +74,50 @@ export default function AdminHomeScreen() {
           "This page is only available to approved administrators.",
         );
 
-        await supabase.auth.signOut();
         router.replace("/login");
         return;
       }
 
       setAdminName(profile.full_name?.trim() || "Administrator");
 
-      // 4. Count non-admin profiles.
-      const { count: usersCount, error: usersError } = await supabase
-        .from("profiles")
-        .select("id", { count: "exact", head: true })
-        .or("role.neq.admin,role.is.null");
+      // Load all four summary counts.
+      const [usersResult, pendingResult, studentsResult, teachersResult] =
+        await Promise.all([
+          supabase
+            .from("profiles")
+            .select("id", { count: "exact", head: true })
+            .or("role.neq.admin,role.is.null"),
 
-      if (usersError) {
-        console.error("Total accounts query failed:", {
-          message: usersError.message,
-          code: usersError.code,
-          details: usersError.details,
-          hint: usersError.hint,
-        });
+          supabase
+            .from("profiles")
+            .select("id", { count: "exact", head: true })
+            .eq("approval_status", "pending")
+            .or("role.neq.admin,role.is.null"),
 
-        throw usersError;
-      }
+          supabase
+            .from("profiles")
+            .select("id", { count: "exact", head: true })
+            .eq("role", "student"),
 
-      // 5. Count non-admin profiles awaiting approval.
-      const { count: pendingCount, error: pendingError } = await supabase
-        .from("profiles")
-        .select("id", { count: "exact", head: true })
-        .eq("approval_status", "pending")
-        .or("role.neq.admin,role.is.null");
+          supabase
+            .from("profiles")
+            .select("id", { count: "exact", head: true })
+            .eq("role", "teacher"),
+        ]);
 
-      if (pendingError) {
-        console.error("Pending accounts query failed:", {
-          message: pendingError.message,
-          code: pendingError.code,
-          details: pendingError.details,
-          hint: pendingError.hint,
-        });
+      const queryError =
+        usersResult.error ||
+        pendingResult.error ||
+        studentsResult.error ||
+        teachersResult.error;
 
-        throw pendingError;
-      }
+      if (queryError) throw queryError;
 
-      // 6. Update the dashboard statistics.
       setStats({
-        totalUsers: usersCount ?? 0,
-        pendingUsers: pendingCount ?? 0,
+        totalUsers: usersResult.count ?? 0,
+        pendingUsers: pendingResult.count ?? 0,
+        students: studentsResult.count ?? 0,
+        teachers: teachersResult.count ?? 0,
       });
     } catch (error: unknown) {
       const err = error as DashboardError;
@@ -137,13 +127,12 @@ export default function AdminHomeScreen() {
         code: err?.code,
         details: err?.details,
         hint: err?.hint,
-        error,
       });
 
       Alert.alert(
         "Unable to load dashboard",
         err?.message ||
-          "Could not load dashboard data. Check your connection, database schema, and Supabase access policies.",
+          "Please check your internet connection, database schema, and Supabase access policies.",
       );
     } finally {
       setLoading(false);
@@ -162,6 +151,10 @@ export default function AdminHomeScreen() {
     void loadDashboard();
   };
 
+  const openPage = (path: string) => {
+    router.push(path as "/admin/users");
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -174,7 +167,6 @@ export default function AdminHomeScreen() {
         <ActivityIndicator size="large" color="#16794A" style={styles.loader} />
 
         <Text style={styles.loadingTitle}>Loading dashboard</Text>
-
         <Text style={styles.loadingSubtitle}>
           Please wait while we retrieve your data.
         </Text>
@@ -239,99 +231,165 @@ export default function AdminHomeScreen() {
           <Text style={styles.adminName}>{adminName}</Text>
 
           <Text style={styles.welcomeDescription}>
-            Manage accounts and monitor registration activity in your StudyMate
-            AI application.
+            Manage your users, review registrations, and oversee learning
+            resources across StudyMate AI.
           </Text>
         </View>
 
-        {/* Statistics */}
-        <Text style={styles.sectionTitle}>Overview</Text>
-
-        <View style={styles.statsContainer}>
-          <View style={[styles.statCard, styles.totalCard]}>
-            <View style={styles.totalIcon}>
-              <Ionicons name="people-outline" size={23} color="#16794A" />
-            </View>
-
-            <Text style={styles.statLabel}>Total Accounts</Text>
-
-            <Text style={styles.statValue}>{stats.totalUsers}</Text>
-
-            <Text style={styles.statDescription}>
-              Registered non-admin profiles
-            </Text>
-          </View>
-
-          <View style={[styles.statCard, styles.pendingCard]}>
-            <View style={styles.pendingIcon}>
-              <Ionicons name="time-outline" size={23} color="#B7791F" />
-            </View>
-
-            <Text style={styles.statLabel}>Pending Approval</Text>
-
-            <Text style={styles.pendingValue}>{stats.pendingUsers}</Text>
-
-            <Text style={styles.statDescription}>Accounts awaiting review</Text>
-          </View>
+        {/* Overview */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Overview</Text>
+          <Text style={styles.sectionCaption}>Database summary</Text>
         </View>
 
-        {/* Account management */}
-        <Text style={styles.sectionTitle}>Management</Text>
+        <View style={styles.statsContainer}>
+          <StatCard
+            title="Total Users"
+            value={stats.totalUsers}
+            description="Non-admin accounts"
+            icon="people-outline"
+            color="#16794A"
+            background="#E5F4E9"
+          />
+
+          <StatCard
+            title="Pending Approvals"
+            value={stats.pendingUsers}
+            description="Awaiting review"
+            icon="time-outline"
+            color="#B7791F"
+            background="#FFF0CF"
+          />
+
+          <StatCard
+            title="Students"
+            value={stats.students}
+            description="Student accounts"
+            icon="school-outline"
+            color="#2868B2"
+            background="#E7F0FF"
+          />
+
+          <StatCard
+            title="Teachers"
+            value={stats.teachers}
+            description="Teacher accounts"
+            icon="person-outline"
+            color="#7952A5"
+            background="#F0E8FA"
+          />
+        </View>
+
+        {/* Approvals */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Account Approvals</Text>
+
+          {stats.pendingUsers > 0 && (
+            <View style={styles.countBadge}>
+              <Text style={styles.countBadgeText}>
+                {stats.pendingUsers} pending
+              </Text>
+            </View>
+          )}
+        </View>
 
         <Pressable
           style={({ pressed }) => [
-            styles.managementCard,
+            styles.featureCard,
             pressed && styles.pressedCard,
           ]}
-          onPress={() => router.push("/admin/users")}
+          onPress={() => openPage("/admin/users")}
           accessibilityRole="button"
-          accessibilityLabel="Open user approvals"
+          accessibilityLabel="Manage user approvals"
         >
-          <View style={styles.managementIcon}>
-            <Ionicons name="people" size={25} color="#16794A" />
+          <View style={styles.featureIcon}>
+            <Ionicons name="person-add-outline" size={25} color="#16794A" />
           </View>
 
-          <View style={styles.managementTextContainer}>
-            <Text style={styles.managementTitle}>User Approvals</Text>
+          <View style={styles.featureContent}>
+            <Text style={styles.featureTitle}>Review Registrations</Text>
 
-            <Text style={styles.managementDescription}>
-              Review registrations and manage account access.
+            <Text style={styles.featureDescription}>
+              Review student and teacher registrations and manage account
+              access.
             </Text>
 
-            {stats.pendingUsers > 0 && (
-              <View style={styles.pendingBadge}>
-                <Text style={styles.pendingBadgeText}>
-                  {stats.pendingUsers} awaiting review
-                </Text>
-              </View>
-            )}
+            <Text style={styles.featureAction}>
+              {stats.pendingUsers > 0
+                ? "View pending accounts"
+                : "Open user management"}
+            </Text>
           </View>
 
-          <Ionicons name="chevron-forward" size={22} color="#7A8B80" />
+          <Ionicons name="chevron-forward" size={21} color="#7A8B80" />
         </Pressable>
 
-        {/* Admin account */}
-        <Text style={styles.sectionTitle}>Your Account</Text>
+        {/* Quick management */}
+        <Text style={styles.sectionTitle}>Quick Management</Text>
 
-        <View style={styles.accountCard}>
-          <View style={styles.accountAvatar}>
-            <Ionicons name="shield-checkmark" size={25} color="#16794A" />
+        <View style={styles.actionList}>
+          <ActionCard
+            icon="people-outline"
+            title="User Management"
+            description="View and manage student and teacher accounts."
+            onPress={() => openPage("/admin/users")}
+          />
+
+          <ActionCard
+            icon="book-outline"
+            title="Learning Materials"
+            description="Manage educational resources uploaded by teachers."
+            onPress={() => openPage("/admin/materials")}
+          />
+
+          <ActionCard
+            icon="bar-chart-outline"
+            title="Reports and Analytics"
+            description="View reports for available StudyMate activity data."
+            onPress={() => openPage("/admin/reports")}
+          />
+
+          <ActionCard
+            icon="settings-outline"
+            title="Settings"
+            description="Access application administration settings."
+            onPress={() => openPage("/admin/settings")}
+          />
+        </View>
+
+        {/* Learning resources */}
+        <Text style={styles.sectionTitle}>Learning Resources</Text>
+
+        <View style={styles.resourceCard}>
+          <View style={styles.resourceIcon}>
+            <Ionicons name="library-outline" size={28} color="#16794A" />
           </View>
 
-          <View style={styles.accountInfo}>
-            <Text style={styles.accountName}>{adminName}</Text>
+          <View style={styles.resourceContent}>
+            <Text style={styles.resourceTitle}>
+              Learning Materials Management
+            </Text>
 
-            <Text style={styles.accountRole}>System Administrator</Text>
+            <Text style={styles.resourceDescription}>
+              Keep educational resources organized and accessible to authorized
+              users. Open the materials section to manage your resources.
+            </Text>
 
-            <View style={styles.accountStatus}>
-              <View style={styles.statusDot} />
-
-              <Text style={styles.statusText}>Authenticated</Text>
-            </View>
+            <Pressable
+              style={({ pressed }) => [
+                styles.resourceButton,
+                pressed && styles.pressedButton,
+              ]}
+              onPress={() => openPage("/admin/materials")}
+              accessibilityRole="button"
+            >
+              <Text style={styles.resourceButtonText}>Manage Materials</Text>
+              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+            </Pressable>
           </View>
         </View>
 
-        {/* Logout is managed by admin/_layout.tsx */}
+        {/* Footer information */}
         <View style={styles.sidebarHint}>
           <Ionicons
             name="information-circle-outline"
@@ -340,13 +398,76 @@ export default function AdminHomeScreen() {
           />
 
           <Text style={styles.sidebarHintText}>
-            Use the sidebar menu to access other admin pages and log out.
+            Use the sidebar to access your account, manage app resources, lock
+            the app, or log out securely.
           </Text>
         </View>
 
         <Text style={styles.footerText}>StudyMate AI · Administration</Text>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+type StatCardProps = {
+  title: string;
+  value: number;
+  description: string;
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  color: string;
+  background: string;
+};
+
+function StatCard({
+  title,
+  value,
+  description,
+  icon,
+  color,
+  background,
+}: StatCardProps) {
+  return (
+    <View style={styles.statCard}>
+      <View style={[styles.statIcon, { backgroundColor: background }]}>
+        <Ionicons name={icon} size={22} color={color} />
+      </View>
+
+      <Text style={styles.statLabel}>{title}</Text>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+      <Text style={styles.statDescription}>{description}</Text>
+    </View>
+  );
+}
+
+type ActionCardProps = {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  title: string;
+  description: string;
+  onPress: () => void;
+};
+
+function ActionCard({ icon, title, description, onPress }: ActionCardProps) {
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.actionCard,
+        pressed && styles.pressedCard,
+      ]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+    >
+      <View style={styles.actionIcon}>
+        <Ionicons name={icon} size={23} color="#16794A" />
+      </View>
+
+      <View style={styles.actionContent}>
+        <Text style={styles.actionTitle}>{title}</Text>
+        <Text style={styles.actionDescription}>{description}</Text>
+      </View>
+
+      <Ionicons name="chevron-forward" size={20} color="#7A8B80" />
+    </Pressable>
   );
 }
 
@@ -436,7 +557,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   welcomeSection: {
-    marginBottom: 27,
+    marginBottom: 25,
   },
   eyebrow: {
     fontSize: 11,
@@ -462,50 +583,48 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: "#718078",
   },
-  sectionTitle: {
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: 13,
     marginTop: 5,
+  },
+  sectionTitle: {
+    marginBottom: 13,
+    marginTop: 7,
     fontSize: 17,
     fontWeight: "800",
     color: "#203C2B",
   },
+  sectionCaption: {
+    fontSize: 10,
+    color: "#849087",
+  },
   statsContainer: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 12,
-    marginBottom: 25,
+    marginBottom: 24,
   },
   statCard: {
-    flex: 1,
-    minHeight: 174,
-    borderRadius: 20,
+    flexBasis: "47%",
+    flexGrow: 1,
+    minWidth: 135,
+    minHeight: 160,
+    borderRadius: 19,
     padding: 15,
-    borderWidth: 1,
-  },
-  totalCard: {
     backgroundColor: "#FFFFFF",
+    borderWidth: 1,
     borderColor: "#E0ECE3",
   },
-  pendingCard: {
-    backgroundColor: "#FFFCF5",
-    borderColor: "#F1E7CF",
-  },
-  totalIcon: {
+  statIcon: {
     width: 42,
     height: 42,
     borderRadius: 13,
-    backgroundColor: "#E5F4E9",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 13,
-  },
-  pendingIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
-    backgroundColor: "#FFF0CF",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 13,
+    marginBottom: 12,
   },
   statLabel: {
     fontSize: 12,
@@ -514,15 +633,8 @@ const styles = StyleSheet.create({
   },
   statValue: {
     marginTop: 5,
-    fontSize: 31,
+    fontSize: 29,
     fontWeight: "800",
-    color: "#16794A",
-  },
-  pendingValue: {
-    marginTop: 5,
-    fontSize: 31,
-    fontWeight: "800",
-    color: "#B7791F",
   },
   statDescription: {
     marginTop: 5,
@@ -530,7 +642,18 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     color: "#849087",
   },
-  managementCard: {
+  countBadge: {
+    backgroundColor: "#FFF0CF",
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  countBadgeText: {
+    color: "#956417",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  featureCard: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
@@ -544,7 +667,7 @@ const styles = StyleSheet.create({
   pressedCard: {
     opacity: 0.75,
   },
-  managementIcon: {
+  featureIcon: {
     width: 49,
     height: 49,
     borderRadius: 15,
@@ -552,81 +675,108 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  managementTextContainer: {
+  featureContent: {
     flex: 1,
   },
-  managementTitle: {
+  featureTitle: {
     fontSize: 15,
     fontWeight: "800",
     color: "#203C2B",
   },
-  managementDescription: {
+  featureDescription: {
     marginTop: 5,
     fontSize: 12,
     lineHeight: 18,
     color: "#718078",
   },
-  pendingBadge: {
-    alignSelf: "flex-start",
-    backgroundColor: "#FFF0CF",
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 8,
+  featureAction: {
     marginTop: 9,
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#16794A",
   },
-  pendingBadgeText: {
-    color: "#956417",
-    fontSize: 10,
-    fontWeight: "700",
+  actionList: {
+    gap: 11,
+    marginBottom: 23,
   },
-  accountCard: {
+  actionCard: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 12,
+    padding: 14,
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
     borderWidth: 1,
     borderColor: "#E0ECE3",
-    padding: 16,
-    marginBottom: 20,
-  },
-  accountAvatar: {
-    width: 51,
-    height: 51,
     borderRadius: 17,
+  },
+  actionIcon: {
+    width: 45,
+    height: 45,
+    borderRadius: 14,
     backgroundColor: "#E5F4E9",
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 13,
   },
-  accountInfo: {
+  actionContent: {
     flex: 1,
   },
-  accountName: {
-    fontSize: 15,
+  actionTitle: {
+    fontSize: 14,
     fontWeight: "800",
     color: "#203C2B",
   },
-  accountRole: {
+  actionDescription: {
     marginTop: 4,
-    fontSize: 12,
+    fontSize: 11,
+    lineHeight: 17,
     color: "#718078",
   },
-  accountStatus: {
+  resourceCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 13,
+    backgroundColor: "#EAF4ED",
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 24,
+  },
+  resourceIcon: {
+    width: 47,
+    height: 47,
+    borderRadius: 14,
+    backgroundColor: "#FFFFFF",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  resourceContent: {
+    flex: 1,
+  },
+  resourceTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#203C2B",
+  },
+  resourceDescription: {
+    marginTop: 7,
+    fontSize: 12,
+    lineHeight: 19,
+    color: "#55705D",
+  },
+  resourceButton: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 8,
-    gap: 6,
+    alignSelf: "flex-start",
+    gap: 8,
+    backgroundColor: "#16794A",
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 11,
+    marginTop: 13,
   },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: "#20A05A",
-  },
-  statusText: {
-    fontSize: 11,
-    color: "#27834D",
-    fontWeight: "600",
+  resourceButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
   sidebarHint: {
     flexDirection: "row",

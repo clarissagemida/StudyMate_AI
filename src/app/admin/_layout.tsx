@@ -2,10 +2,11 @@ import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { router, usePathname } from "expo-router";
 import { Drawer } from "expo-router/drawer";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,8 +15,15 @@ import {
 } from "react-native";
 
 const GREEN = "#176B45";
+const PHOTO_BUCKET = "profile-photos";
 
 type GuardState = "checking" | "allowed" | "denied";
+type WorkingState = "locking" | "signingOut" | null;
+
+type AdminProfile = {
+  full_name: string | null;
+  avatar_path: string | null;
+};
 
 const MENU_ITEMS = [
   {
@@ -52,10 +60,101 @@ const MENU_ITEMS = [
 
 function AdminDrawerContent() {
   const pathname = usePathname();
-  const [signingOut, setSigningOut] = useState(false);
+
+  const [working, setWorking] = useState<WorkingState>(null);
+  const [adminName, setAdminName] = useState("Administrator");
+  const [adminAvatarUrl, setAdminAvatarUrl] = useState<string | null>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+
+  const isWorking = working !== null;
+  const signingOut = working === "signingOut";
+
+  const loadAdminProfile = useCallback(async () => {
+    try {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError) throw authError;
+
+      if (!user) {
+        setAdminName("Administrator");
+        setAdminAvatarUrl(null);
+        setAvatarFailed(false);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("full_name, avatar_path")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      const profile = data as AdminProfile | null;
+
+      setAdminName(profile?.full_name?.trim() || "Administrator");
+      setAvatarFailed(false);
+
+      if (!profile?.avatar_path) {
+        setAdminAvatarUrl(null);
+        return;
+      }
+
+      const { data: signedImage, error: imageError } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .createSignedUrl(profile.avatar_path, 60 * 60);
+
+      if (imageError) throw imageError;
+
+      setAdminAvatarUrl(signedImage?.signedUrl ?? null);
+    } catch (error) {
+      console.error("Unable to load sidebar admin profile:", error);
+      setAdminAvatarUrl(null);
+    }
+  }, []);
+
+  // Refresh the profile when navigating between admin screens.
+  useEffect(() => {
+    void loadAdminProfile();
+  }, [loadAdminProfile, pathname]);
+
+  // Refresh profile information when the authentication session changes.
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(() => {
+      void loadAdminProfile();
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [loadAdminProfile]);
+
+  const accountActive =
+    pathname === "/admin/account" || pathname.startsWith("/admin/account/");
+
+  const handleLockApp = () => {
+    if (isWorking) return;
+
+    Alert.alert(
+      "Lock StudyMate AI",
+      "Return to the login screen? Your saved session will be preserved.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Lock App",
+          onPress: () => router.replace("/login"),
+        },
+      ],
+    );
+  };
 
   const handleLogout = () => {
-    if (signingOut) return;
+    if (isWorking) return;
 
     Alert.alert(
       "Log Out",
@@ -66,7 +165,7 @@ function AdminDrawerContent() {
           text: "Log Out",
           style: "destructive",
           onPress: async () => {
-            setSigningOut(true);
+            setWorking("signingOut");
 
             try {
               const { error } = await supabase.auth.signOut();
@@ -78,14 +177,18 @@ function AdminDrawerContent() {
               const message =
                 error instanceof Error ? error.message : "Please try again.";
 
-              Alert.alert("Logout failed", message);
+              Alert.alert("Logout Failed", message);
             } finally {
-              setSigningOut(false);
+              setWorking(null);
             }
           },
         },
       ],
     );
+  };
+
+  const handleAvatarError = () => {
+    setAvatarFailed(true);
   };
 
   return (
@@ -95,6 +198,7 @@ function AdminDrawerContent() {
         contentContainerStyle={styles.drawerScrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Sidebar branding */}
         <View style={styles.drawerHeader}>
           <View style={styles.logoContainer}>
             <Ionicons name="school" size={27} color="#FFFFFF" />
@@ -106,6 +210,7 @@ function AdminDrawerContent() {
           </View>
         </View>
 
+        {/* Main navigation */}
         <View style={styles.menuLabelContainer}>
           <Text style={styles.menuLabel}>MAIN MENU</Text>
         </View>
@@ -140,20 +245,86 @@ function AdminDrawerContent() {
               >
                 {item.label}
               </Text>
+
+              {active && <View style={styles.activeIndicator} />}
             </Pressable>
           );
         })}
+
+        {/* Account navigation: vector icon, not profile photo */}
+        <View style={[styles.menuLabelContainer, styles.accountSectionLabel]}>
+          <Text style={styles.menuLabel}>ACCOUNT</Text>
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: accountActive }}
+          accessibilityLabel="Open My Account"
+          onPress={() => router.navigate("/admin/account")}
+          style={({ pressed }) => [
+            styles.menuItem,
+            accountActive && styles.menuItemActive,
+            pressed && styles.menuItemPressed,
+          ]}
+        >
+          <View
+            style={[
+              styles.accountAvatar,
+              accountActive && styles.accountAvatarActive,
+            ]}
+          >
+            <Ionicons
+              name="person-circle-outline"
+              size={25}
+              color={accountActive ? GREEN : "#425348"}
+            />
+          </View>
+
+          <View style={styles.accountMenuText}>
+            <Text
+              style={[
+                styles.menuItemLabel,
+                accountActive && styles.menuItemLabelActive,
+              ]}
+            >
+              My Account
+            </Text>
+
+            <Text style={styles.accountMenuSubtitle}>
+              Profile and account details
+            </Text>
+          </View>
+
+          <Ionicons
+            name="chevron-forward"
+            size={17}
+            color={accountActive ? GREEN : "#9AA69D"}
+          />
+        </Pressable>
       </ScrollView>
 
+      {/* Sidebar footer: show the admin profile photo only here */}
       <View style={styles.drawerFooter}>
         <View style={styles.adminInfo}>
           <View style={styles.adminAvatar}>
-            <Ionicons name="shield-checkmark" size={22} color={GREEN} />
+            {adminAvatarUrl && !avatarFailed ? (
+              <Image
+                source={{ uri: adminAvatarUrl }}
+                style={styles.footerAvatarImage}
+                resizeMode="cover"
+                onError={handleAvatarError}
+              />
+            ) : (
+              <Ionicons name="person-circle-outline" size={29} color={GREEN} />
+            )}
           </View>
 
           <View style={styles.adminTextContainer}>
-            <Text style={styles.adminName}>Administrator</Text>
-            <Text style={styles.adminRole}>System Admin</Text>
+            <Text style={styles.adminName} numberOfLines={1}>
+              {adminName}
+            </Text>
+
+            <Text style={styles.adminRole}>System Administrator</Text>
           </View>
 
           <View style={styles.onlineIndicator} />
@@ -161,14 +332,30 @@ function AdminDrawerContent() {
 
         <View style={styles.footerDivider} />
 
+        {/* Lock App */}
         <Pressable
           accessibilityRole="button"
-          disabled={signingOut}
+          disabled={isWorking}
+          onPress={handleLockApp}
+          style={({ pressed }) => [
+            styles.lockButton,
+            pressed && styles.menuItemPressed,
+            isWorking && styles.disabledButton,
+          ]}
+        >
+          <Ionicons name="lock-closed-outline" size={21} color={GREEN} />
+          <Text style={styles.lockLabel}>Lock App</Text>
+        </Pressable>
+
+        {/* Log Out */}
+        <Pressable
+          accessibilityRole="button"
+          disabled={isWorking}
           onPress={handleLogout}
           style={({ pressed }) => [
             styles.logoutButton,
             pressed && styles.menuItemPressed,
-            signingOut && styles.disabledButton,
+            isWorking && styles.disabledButton,
           ]}
         >
           {signingOut ? (
@@ -218,13 +405,14 @@ export default function AdminLayout() {
         if (!active) return;
 
         if (profileError) {
-          console.error("Admin verification failed:", {
-            message: profileError.message,
-            code: profileError.code,
-            details: profileError.details,
-          });
-
+          console.error("Admin verification failed:", profileError);
           setGuard("denied");
+
+          Alert.alert(
+            "Verification Error",
+            "Administrator access could not be verified. Please check your connection and try again.",
+          );
+
           router.replace("/login");
           return;
         }
@@ -238,6 +426,7 @@ export default function AdminLayout() {
         }
 
         setGuard("denied");
+
         await supabase.auth.signOut();
 
         if (active) {
@@ -249,6 +438,12 @@ export default function AdminLayout() {
         if (!active) return;
 
         setGuard("denied");
+
+        Alert.alert(
+          "Verification Error",
+          "Unable to verify administrator access. Please try again.",
+        );
+
         router.replace("/login");
       }
     }
@@ -296,13 +491,9 @@ export default function AdminLayout() {
     <Drawer
       drawerContent={() => <AdminDrawerContent />}
       screenOptions={{
-        headerStyle: {
-          backgroundColor: GREEN,
-        },
+        headerStyle: { backgroundColor: GREEN },
         headerTintColor: "#FFFFFF",
-        headerTitleStyle: {
-          fontWeight: "800",
-        },
+        headerTitleStyle: { fontWeight: "800" },
         headerShadowVisible: false,
         drawerActiveTintColor: GREEN,
         drawerActiveBackgroundColor: "#E7F3EA",
@@ -377,6 +568,14 @@ export default function AdminLayout() {
           drawerIcon: ({ color, size }) => (
             <Ionicons name="settings-outline" color={color} size={size} />
           ),
+        }}
+      />
+
+      <Drawer.Screen
+        name="account"
+        options={{
+          title: "My Account",
+          drawerItemStyle: { display: "none" },
         }}
       />
     </Drawer>
@@ -471,6 +670,9 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
     color: "#94A198",
   },
+  accountSectionLabel: {
+    marginTop: 22,
+  },
   menuItem: {
     minHeight: 48,
     flexDirection: "row",
@@ -497,6 +699,32 @@ const styles = StyleSheet.create({
     color: GREEN,
     fontWeight: "800",
   },
+  activeIndicator: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: GREEN,
+  },
+  accountMenuText: {
+    flex: 1,
+    gap: 3,
+  },
+  accountMenuSubtitle: {
+    fontSize: 10,
+    color: "#829087",
+  },
+  accountAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E5F4E9",
+  },
+  accountAvatarActive: {
+    backgroundColor: "#D6EBDD",
+  },
   drawerFooter: {
     borderTopWidth: 1,
     borderTopColor: "#E8EEE9",
@@ -516,9 +744,15 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 14,
+    overflow: "hidden",
     backgroundColor: "#E5F4E9",
     alignItems: "center",
     justifyContent: "center",
+  },
+  footerAvatarImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 14,
   },
   adminTextContainer: {
     flex: 1,
@@ -544,6 +778,22 @@ const styles = StyleSheet.create({
     backgroundColor: "#E8EEE9",
     marginHorizontal: 8,
     marginBottom: 8,
+  },
+  lockButton: {
+    minHeight: 46,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingHorizontal: 16,
+    marginHorizontal: 4,
+    marginBottom: 4,
+    borderRadius: 12,
+    backgroundColor: "#E7F3EA",
+  },
+  lockLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GREEN,
   },
   logoutButton: {
     minHeight: 46,
