@@ -7,26 +7,9 @@ export type BiometricResult = {
 
 export async function authenticateWithBiometrics(): Promise<BiometricResult> {
   try {
-    // 1. Check whether biometric hardware is available.
-    const hasHardware = await LocalAuthentication.hasHardwareAsync();
-
-    // 2. Check whether a biometric is enrolled.
-    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-
-    // 3. Check which biometric types the device supports.
-    const availableTypes =
-      await LocalAuthentication.supportedAuthenticationTypesAsync();
-
-    // Device credentials can be available even if biometric hardware
-    // is missing or no biometric is enrolled.
-    // Therefore, do not stop here just because these checks fail.
-
-    const canUseBiometrics =
-      hasHardware && isEnrolled && availableTypes.length > 0;
-
-    // 4. Request device authentication.
-    // Allow the operating system to offer device credentials when
-    // supported. The available methods depend on Android/iOS.
+    // Request device authentication. No availability pre-check is required:
+    // the operating system offers biometric sensors when present and, with
+    // device credentials enabled, the lock screen PIN/password as fallback.
     const result = await LocalAuthentication.authenticateAsync({
       promptMessage: "Login to StudyMate AI",
       promptSubtitle: "Verify your identity to continue",
@@ -44,7 +27,7 @@ export async function authenticateWithBiometrics(): Promise<BiometricResult> {
       };
     }
 
-    // 5. Handle common authentication failures.
+    // Handle common authentication failures.
     switch (result.error) {
       case "user_cancel":
         return {

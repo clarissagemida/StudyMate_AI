@@ -116,8 +116,6 @@ export default function AdminAccountScreen() {
   };
 
   const loadProfile = useCallback(async () => {
-    setLoading(true);
-
     try {
       const {
         data: { user },
@@ -187,8 +185,14 @@ export default function AdminAccountScreen() {
     }
   }, []);
 
+  // Loader lives inside the effect so no state is applied synchronously
+  // while the effect itself runs.
   useEffect(() => {
-    void loadProfile();
+    const run = async () => {
+      await loadProfile();
+    };
+
+    void run();
   }, [loadProfile]);
 
   const choosePhoto = async () => {
@@ -356,6 +360,7 @@ export default function AdminAccountScreen() {
   const cancelEditing = () => {
     setSelectedPhoto(null);
     setEditing(false);
+    setLoading(true);
     void loadProfile();
   };
 

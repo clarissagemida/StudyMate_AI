@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -19,29 +20,26 @@ type Stat = { label: string; value: number; icon: keyof typeof Ionicons.glyphMap
 export default function AdminReportsScreen() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<Stat[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let active = true;
 
     async function load() {
       try {
-        const [
-          { count: total },
-          { count: pending },
-          { count: students },
-          { count: teachers },
-        ] = await Promise.all([
+        const results = await Promise.all([
           supabase
             .from("profiles")
             .select("*", { count: "exact", head: true })
-            .or("(role.neq.admin,role.is.null)")
-            .or("(requested_role.neq.admin,requested_role.is.null)"),
+            .or("role.neq.admin,role.is.null")
+            .or("requested_role.neq.admin,requested_role.is.null"),
           supabase
             .from("profiles")
             .select("*", { count: "exact", head: true })
             .eq("approval_status", "pending")
-            .or("(role.neq.admin,role.is.null)")
-            .or("(requested_role.neq.admin,requested_role.is.null)"),
+            .or("role.neq.admin,role.is.null")
+            .or("requested_role.neq.admin,requested_role.is.null"),
           supabase
             .from("profiles")
             .select("*", { count: "exact", head: true })
@@ -52,8 +50,18 @@ export default function AdminReportsScreen() {
             .eq("role", "teacher"),
         ]);
 
+        const failed = results.find((result) => result.error);
+
+        if (failed?.error) {
+          throw new Error(failed.error.message);
+        }
+
         if (!active) return;
 
+        const [{ count: total }, { count: pending }, { count: students }, { count: teachers }] =
+          results;
+
+        setLoadError(null);
         setStats([
           { label: "Total accounts", value: total ?? 0, icon: "people-outline" },
           { label: "Pending review", value: pending ?? 0, icon: "time-outline" },
@@ -62,6 +70,14 @@ export default function AdminReportsScreen() {
         ]);
       } catch (error) {
         console.error("Reports error:", error);
+
+        if (active) {
+          setLoadError(
+            error instanceof Error
+              ? error.message
+              : "Statistics could not be loaded. Check your connection and Supabase permissions.",
+          );
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -72,7 +88,13 @@ export default function AdminReportsScreen() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [reloadToken]);
+
+  const handleRetry = () => {
+    setLoading(true);
+    setLoadError(null);
+    setReloadToken((token) => token + 1);
+  };
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
@@ -94,6 +116,24 @@ export default function AdminReportsScreen() {
           <View style={styles.centerBox}>
             <ActivityIndicator size="large" color={GREEN} />
             <Text style={styles.centerText}>Gathering statistics...</Text>
+          </View>
+        ) : loadError ? (
+          <View style={styles.errorBox}>
+            <View style={styles.errorIcon}>
+              <Ionicons name="cloud-offline-outline" size={24} color="#FFFFFF" />
+            </View>
+
+            <Text style={styles.errorTitle}>Unable to load statistics</Text>
+            <Text style={styles.errorText}>{loadError}</Text>
+
+            <Pressable
+              onPress={handleRetry}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+            >
+              <Ionicons name="refresh" size={17} color="#FFFFFF" />
+              <Text style={styles.retryButtonText}>Try Again</Text>
+            </Pressable>
           </View>
         ) : (
           <View style={styles.grid}>
@@ -143,6 +183,45 @@ const styles = StyleSheet.create({
   },
   centerBox: { alignItems: "center", paddingVertical: 50, gap: 10 },
   centerText: { fontSize: 13, color: "#758479" },
+  errorBox: {
+    alignItems: "center",
+    paddingVertical: 36,
+    paddingHorizontal: 24,
+    gap: 9,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E5EDE7",
+  },
+  errorIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 17,
+    backgroundColor: "#B33A3A",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  errorTitle: { fontSize: 15, fontWeight: "800", color: "#20392B" },
+  errorText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#758479",
+    textAlign: "center",
+  },
+  retryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: GREEN,
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    minHeight: 46,
+    justifyContent: "center",
+    marginTop: 6,
+  },
+  retryButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
+  pressed: { opacity: 0.8 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   statCard: {
     flexGrow: 1,

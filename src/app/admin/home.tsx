@@ -140,8 +140,14 @@ export default function AdminHomeScreen() {
     }
   }, []);
 
+  // Loader lives inside the effect so no state is applied synchronously
+  // while the effect itself runs.
   useEffect(() => {
-    void loadDashboard();
+    const run = async () => {
+      await loadDashboard();
+    };
+
+    void run();
   }, [loadDashboard]);
 
   const handleRefresh = () => {

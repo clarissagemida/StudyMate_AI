@@ -7,9 +7,13 @@
 -- WHAT IT DOES
 --   Whenever a student/teacher signs up (a new row in auth.users), this trigger
 --   automatically creates a matching row in public.profiles with:
+--       email           = the sign-up email address
 --       role            = the requested role ('student' or 'teacher')
 --       requested_role  = the requested role
 --       approval_status = 'pending'
+--   A second trigger keeps profiles.email in sync when the address changes
+--   later in Supabase Auth, and a back-fill repairs rows created before the
+--   email column existed.
 --   The account then appears in the admin app's "Pending" list, where the
 --   administrator can Approve or Reject it. No one ever has to edit the
 --   Supabase table by hand.
@@ -21,6 +25,9 @@
 --   * Every new account starts 'pending' and cannot sign in until an admin
 --     approves it (the login screen enforces this).
 -- ============================================================================
+
+-- Ensure the email column exists (older projects pre-date it).
+alter table public.profiles add column if not exists email text;
 
 create or replace function public.handle_new_user()
 returns trigger
@@ -44,6 +51,7 @@ begin
 
   insert into public.profiles (
     id,
+    email,
     full_name,
     student_id,
     role,
@@ -52,6 +60,7 @@ begin
   )
   values (
     new.id,
+    new.email,
     coalesce(v_full_name, 'New User'),
     v_student_id,
     v_requested,     -- role is granted with approval gating via approval_status
@@ -72,12 +81,39 @@ create trigger on_auth_user_created
   execute function public.handle_new_user();
 
 -- ----------------------------------------------------------------------------
+-- Keep profiles.email in sync when the address changes in Supabase Auth
+-- (e.g. the user confirms or edits their email from the auth screens).
+-- ----------------------------------------------------------------------------
+create or replace function public.sync_profile_email()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.email is distinct from old.email then
+    update public.profiles
+       set email = new.email
+     where id = new.id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists sync_profile_email on auth.users;
+create trigger sync_profile_email
+  after update of email on auth.users
+  for each row
+  execute function public.sync_profile_email();
+
+-- ----------------------------------------------------------------------------
 -- OPTIONAL: back-fill profiles for any auth users that don't have a row yet.
 -- Useful if you registered accounts before this trigger existed.
 -- ----------------------------------------------------------------------------
-insert into public.profiles (id, full_name, student_id, role, requested_role, approval_status)
+insert into public.profiles (id, email, full_name, student_id, role, requested_role, approval_status)
 select
   u.id,
+  u.email,
   coalesce(nullif(trim(u.raw_user_meta_data->>'full_name'), ''), 'New User'),
   nullif(trim(u.raw_user_meta_data->>'student_id'), ''),
   case
@@ -94,6 +130,15 @@ select
 from auth.users u
 left join public.profiles p on p.id = u.id
 where p.id is null;
+
+-- Repair profiles created before profiles.email existed (or before the
+-- sync trigger above was added).
+update public.profiles p
+   set email = u.email
+  from auth.users u
+ where u.id = p.id
+   and u.email is not null
+   and (p.email is null or p.email is distinct from u.email);
 
 -- ============================================================================
 -- Notes

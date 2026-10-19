@@ -1,10 +1,10 @@
 import { supabase } from "@/lib/supabase";
+import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Image,
   Pressable,
@@ -115,12 +115,13 @@ export default function AdminUsersScreen() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [lastFilterKey, setLastFilterKey] = useState(
+    () => `${search}::${activeFilter}`,
+  );
 
   const fetchProfiles = useCallback(async (isRefresh = false) => {
     if (isRefresh) {
       setRefreshing(true);
-    } else {
-      setLoading(true);
     }
 
     try {
@@ -137,7 +138,7 @@ export default function AdminUsersScreen() {
       }
 
       if (authError || !user) {
-        Alert.alert(
+        showNotice(
           "Session Required",
           "Please sign in to access user management.",
         );
@@ -167,7 +168,7 @@ export default function AdminUsersScreen() {
           currentProfileError,
         );
 
-        Alert.alert(
+        showNotice(
           "Unable to Verify Access",
           "We could not verify your account permissions.",
         );
@@ -175,7 +176,7 @@ export default function AdminUsersScreen() {
       }
 
       if (currentProfile?.role !== "admin") {
-        Alert.alert(
+        showNotice(
           "Access Denied",
           "Only administrators can manage user accounts.",
         );
@@ -193,7 +194,7 @@ export default function AdminUsersScreen() {
       if (error) {
         console.error("Error fetching profiles:", error.message);
 
-        Alert.alert(
+        showNotice(
           "Unable to Load Users",
           "Could not retrieve user accounts. Check that the email and avatar_path columns exist and that your Supabase Row Level Security policies allow administrators to read profiles.",
         );
@@ -231,7 +232,7 @@ export default function AdminUsersScreen() {
     } catch (error) {
       console.error("Unexpected user management error:", error);
 
-      Alert.alert(
+      showNotice(
         "Something Went Wrong",
         "An unexpected error occurred while loading users.",
       );
@@ -241,15 +242,18 @@ export default function AdminUsersScreen() {
     }
   }, []);
 
+  // Loader lives inside the effect so no state is applied synchronously
+  // while the effect itself runs.
   useEffect(() => {
-    void fetchProfiles();
+    const run = async () => {
+      await fetchProfiles();
+    };
+
+    void run();
   }, [fetchProfiles]);
 
   const managedProfiles = useMemo(() => {
-    return profiles.filter(
-      (profile) =>
-        profile.role !== "admin" && profile.requested_role !== "admin",
-    );
+    return profiles.filter((profile) => profile.role !== "admin");
   }, [profiles]);
 
   const counts = useMemo(() => {
@@ -311,16 +315,20 @@ export default function AdminUsersScreen() {
     visibleProfiles.length,
   );
 
-  useEffect(() => {
+  // Adjust pagination while rendering: React's documented render-time state
+  // adjustment replaces the old page-reset effects, so no state is ever set
+  // from inside an effect.
+  const filterKey = `${search}::${activeFilter}`;
+
+  if (filterKey !== lastFilterKey) {
+    setLastFilterKey(filterKey);
     setCurrentPage(1);
     setOpenMenuId(null);
-  }, [search, activeFilter]);
+  }
 
-  useEffect(() => {
-    if (currentPage > totalPages) {
-      setCurrentPage(totalPages);
-    }
-  }, [currentPage, totalPages]);
+  if (currentPage > totalPages) {
+    setCurrentPage(totalPages);
+  }
 
   const updateApproval = useCallback(
     (profile: Profile, nextStatus: ApprovalStatus) => {
@@ -332,99 +340,95 @@ export default function AdminUsersScreen() {
 
       const actionLabel = actionLabels[nextStatus];
 
-      Alert.alert(
-        capitalize(actionLabel),
+      const confirmLabel = capitalize(actionLabel);
+
+      confirmAction(
+        confirmLabel,
         `Are you sure you want to ${actionLabel} ${
           profile.full_name || "this account"
         }?`,
-        [
-          {
-            text: "Cancel",
-            style: "cancel",
-          },
-          {
-            text: capitalize(actionLabel),
-            style: nextStatus === "rejected" ? "destructive" : "default",
-            onPress: () => {
-              void (async () => {
-                setUpdatingId(profile.id);
+        () => {
+          void (async () => {
+            setUpdatingId(profile.id);
 
-                try {
-                  const { data, error } = await supabase
-                    .from("profiles")
-                    .update({ approval_status: nextStatus })
-                    .eq("id", profile.id)
-                    .select("id, approval_status")
-                    .maybeSingle();
+            try {
+              const { data, error } = await supabase
+                .from("profiles")
+                .update({ approval_status: nextStatus })
+                .eq("id", profile.id)
+                .select("id, approval_status")
+                .maybeSingle();
 
-                  if (error) {
-                    console.error("[AdminUsers] Approval update error:", {
-                      message: error.message,
-                      code: error.code,
-                      details: error.details,
-                      hint: error.hint,
-                    });
+              if (error) {
+                console.error("[AdminUsers] Approval update error:", {
+                  message: error.message,
+                  code: error.code,
+                  details: error.details,
+                  hint: error.hint,
+                });
 
-                    const errorCode = error.code
-                      ? `\n\nCode: ${error.code}`
-                      : "";
-                    const errorDetails = error.details
-                      ? `\n\nDetails: ${error.details}`
-                      : "";
-                    const errorHint = error.hint
-                      ? `\n\nHint: ${error.hint}`
-                      : "";
+                const errorCode = error.code
+                  ? `\n\nCode: ${error.code}`
+                  : "";
+                const errorDetails = error.details
+                  ? `\n\nDetails: ${error.details}`
+                  : "";
+                const errorHint = error.hint
+                  ? `\n\nHint: ${error.hint}`
+                  : "";
 
-                    Alert.alert(
-                      "Update Failed",
-                      `${error.message}${errorCode}${errorDetails}${errorHint}`,
-                    );
-                    return;
-                  }
+                showNotice(
+                  "Update Failed",
+                  `${error.message}${errorCode}${errorDetails}${errorHint}`,
+                );
+                return;
+              }
 
-                  if (!data) {
-                    Alert.alert(
-                      "No Changes Made",
-                      "No profile was updated. Check that your administrator update policy allows this action.",
-                    );
-                    return;
-                  }
+              if (!data) {
+                showNotice(
+                  "No Changes Made",
+                  "No profile was updated. Check that your administrator update policy allows this action.",
+                );
+                return;
+              }
 
-                  setProfiles((currentProfiles) =>
-                    currentProfiles.map((item) =>
-                      item.id === profile.id
-                        ? {
-                            ...item,
-                            approval_status: nextStatus,
-                          }
-                        : item,
-                    ),
-                  );
+              setProfiles((currentProfiles) =>
+                currentProfiles.map((item) =>
+                  item.id === profile.id
+                    ? {
+                        ...item,
+                        approval_status: nextStatus,
+                      }
+                    : item,
+                ),
+              );
 
-                  Alert.alert(
-                    "Success",
-                    `${profile.full_name || "The account"} has been ${
-                      nextStatus === "approved"
-                        ? "approved"
-                        : nextStatus === "rejected"
-                          ? "rejected"
-                          : "returned to pending status"
-                    }.`,
-                  );
-                } catch (error) {
-                  console.error("Unexpected update error:", error);
+              showNotice(
+                "Success",
+                `${profile.full_name || "The account"} has been ${
+                  nextStatus === "approved"
+                    ? "approved"
+                    : nextStatus === "rejected"
+                      ? "rejected"
+                      : "returned to pending status"
+                }.`,
+              );
+            } catch (error) {
+              console.error("Unexpected update error:", error);
 
-                  Alert.alert(
-                    "Update Failed",
-                    "An unexpected error occurred. Please try again.",
-                  );
-                } finally {
-                  setUpdatingId(null);
-                }
-              })();
-            },
-          },
-        ],
+              showNotice(
+                "Update Failed",
+                "An unexpected error occurred. Please try again.",
+              );
+            } finally {
+              setUpdatingId(null);
+            }
+          })();
+        },
+        {
+          confirmLabel,
+          destructive: nextStatus === "rejected",
+        },
       );
     },
     [],

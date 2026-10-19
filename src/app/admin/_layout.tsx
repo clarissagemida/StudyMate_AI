@@ -1,11 +1,13 @@
+import { useRequireRole } from "@/hooks/useRequireRole";
 import { supabase } from "@/lib/supabase";
+import { setAppLocked } from "@/utils/appLock";
+import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router, usePathname } from "expo-router";
 import { Drawer } from "expo-router/drawer";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Image,
   Pressable,
   ScrollView,
@@ -17,7 +19,6 @@ import {
 const GREEN = "#176B45";
 const PHOTO_BUCKET = "profile-photos";
 
-type GuardState = "checking" | "allowed" | "denied";
 type WorkingState = "locking" | "signingOut" | null;
 
 type AdminProfile = {
@@ -116,9 +117,15 @@ function AdminDrawerContent() {
     }
   }, []);
 
-  // Refresh the profile when navigating between admin screens.
+  // Refresh the profile when navigating between admin screens. The loader is
+  // awaited inside an effect-local runner so state is never applied
+  // synchronously while the effect executes.
   useEffect(() => {
-    void loadAdminProfile();
+    const run = async () => {
+      await loadAdminProfile();
+    };
+
+    void run();
   }, [loadAdminProfile, pathname]);
 
   // Refresh profile information when the authentication session changes.
@@ -140,50 +147,45 @@ function AdminDrawerContent() {
   const handleLockApp = () => {
     if (isWorking) return;
 
-    Alert.alert(
+    confirmAction(
       "Lock StudyMate AI",
       "Return to the login screen? Your saved session will be preserved.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Lock App",
-          onPress: () => router.replace("/login"),
-        },
-      ],
+      () => {
+        // The lock is central state: every protected layout re-checks it, so
+        // a deep link cannot open an admin screen before a fresh unlock.
+        setAppLocked(true);
+        router.replace("/login");
+      },
+      { confirmLabel: "Lock App" },
     );
   };
 
   const handleLogout = () => {
     if (isWorking) return;
 
-    Alert.alert(
+    confirmAction(
       "Log Out",
       "Are you sure you want to log out of StudyMate AI?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Log Out",
-          style: "destructive",
-          onPress: async () => {
-            setWorking("signingOut");
+      async () => {
+        setWorking("signingOut");
 
-            try {
-              const { error } = await supabase.auth.signOut();
+        try {
+          const { error } = await supabase.auth.signOut();
 
-              if (error) throw error;
+          if (error) throw error;
 
-              router.replace("/login");
-            } catch (error: unknown) {
-              const message =
-                error instanceof Error ? error.message : "Please try again.";
+          setAppLocked(false);
+          router.replace("/login");
+        } catch (error: unknown) {
+          const message =
+            error instanceof Error ? error.message : "Please try again.";
 
-              Alert.alert("Logout Failed", message);
-            } finally {
-              setWorking(null);
-            }
-          },
-        },
-      ],
+          showNotice("Logout Failed", message);
+        } finally {
+          setWorking(null);
+        }
+      },
+      { confirmLabel: "Log Out", destructive: true },
     );
   };
 
@@ -376,84 +378,8 @@ function AdminDrawerContent() {
 }
 
 export default function AdminLayout() {
-  const [guard, setGuard] = useState<GuardState>("checking");
-
-  useEffect(() => {
-    let active = true;
-
-    async function verifyAdmin() {
-      try {
-        const {
-          data: { user },
-          error: authError,
-        } = await supabase.auth.getUser();
-
-        if (!active) return;
-
-        if (authError || !user) {
-          setGuard("denied");
-          router.replace("/login");
-          return;
-        }
-
-        const { data: profile, error: profileError } = await supabase
-          .from("profiles")
-          .select("role, approval_status")
-          .eq("id", user.id)
-          .maybeSingle();
-
-        if (!active) return;
-
-        if (profileError) {
-          console.error("Admin verification failed:", profileError);
-          setGuard("denied");
-
-          Alert.alert(
-            "Verification Error",
-            "Administrator access could not be verified. Please check your connection and try again.",
-          );
-
-          router.replace("/login");
-          return;
-        }
-
-        const isAdmin =
-          profile?.role === "admin" && profile?.approval_status === "approved";
-
-        if (isAdmin) {
-          setGuard("allowed");
-          return;
-        }
-
-        setGuard("denied");
-
-        await supabase.auth.signOut();
-
-        if (active) {
-          router.replace("/login");
-        }
-      } catch (error) {
-        console.error("Admin access check failed:", error);
-
-        if (!active) return;
-
-        setGuard("denied");
-
-        Alert.alert(
-          "Verification Error",
-          "Unable to verify administrator access. Please try again.",
-        );
-
-        router.replace("/login");
-      }
-    }
-
-    void verifyAdmin();
-
-    return () => {
-      active = false;
-    };
-  }, []);
+  // Shared guard: session + role + approval + central lock state.
+  const guard = useRequireRole("admin");
 
   if (guard === "checking") {
     return (

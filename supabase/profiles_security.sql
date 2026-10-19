@@ -7,7 +7,8 @@
 -- It enforces, at the database level, that:
 --   1. A student/teacher can read only their own profile.
 --   2. Administrators can read every profile.
---   3. Only administrators may change a user's role or approval_status.
+--   3. Only administrators may change a user's role, requested_role, or
+--      approval_status.
 --   4. Administrator accounts are IMMUTABLE from the app: not even another
 --      admin can change or delete an admin through the client. They can only
 --      be managed from the Supabase dashboard (SQL editor / service role).
@@ -72,20 +73,32 @@ begin
   -- Admin accounts are immutable from the app.
   if old.role = 'admin' then
     if new.role is distinct from old.role
-       or new.approval_status is distinct from old.approval_status then
+       or new.approval_status is distinct from old.approval_status
+       or new.requested_role is distinct from old.requested_role then
       raise exception
         'Administrator accounts can only be modified from the Supabase dashboard';
     end if;
     return new;
   end if;
 
-  -- Non-admin accounts: only admins may change role / approval_status.
+  -- Non-admin accounts: only admins may change role / requested_role /
+  -- approval_status. This also blocks a non-admin from promoting themselves
+  -- to administrator, because ANY role change is rejected here.
   if not public.is_admin() then
     if new.role is distinct from old.role
+       or new.requested_role is distinct from old.requested_role
        or new.approval_status is distinct from old.approval_status then
       raise exception
-        'Only administrators can change a user role or approval status';
+        'Only administrators can change a user role, requested role, or approval status';
     end if;
+  end if;
+
+  -- A non-admin may never end up with an admin role, even if the row was
+  -- written by another privileged path in the same transaction.
+  if new.role = 'admin'
+     and old.role is distinct from 'admin'
+     and not public.is_admin() then
+    raise exception 'Only administrators can promote a user to administrator';
   end if;
 
   return new;

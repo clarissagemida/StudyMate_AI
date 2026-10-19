@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { setAppLocked } from "@/utils/appLock";
 import { authenticateWithBiometrics } from "@/utils/biometrics";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -73,6 +74,10 @@ export default function LoginScreen() {
 
         return;
       }
+      // Password or biometric verification succeeded for an approved
+      // account: this is the only place the central app lock is cleared.
+      setAppLocked(false);
+
       switch (profile.role) {
         case "student":
           router.replace("/student");
