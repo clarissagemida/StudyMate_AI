@@ -3,5 +3,12 @@
     "source.fixAll": "explicit",
     "source.organizeImports": "explicit",
     "source.sortMembers": "explicit"
-  }
+  },
+
+  "deno.enable": true,
+  "deno.enablePaths": [
+    "./study-buddy",
+    "./teacher-ai-generator",
+    "./delete-account"
+  ]
 }

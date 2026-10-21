@@ -13,5 +13,9 @@
     ".expo/types/**/*.ts",
     "expo-env.d.ts",
     "firebase/config.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "supabase/functions"
   ]
 }

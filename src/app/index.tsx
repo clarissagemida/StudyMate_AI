@@ -28,7 +28,7 @@ export default function Index() {
 
       <View style={styles.content}>
         <Image
-          source={require("../../assets/images/studymate_logo.png")}
+          source={require("../../assets/images/image.png")}
           style={styles.logo}
           resizeMode="contain"
         />

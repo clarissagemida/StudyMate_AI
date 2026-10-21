@@ -36,7 +36,12 @@ export function useRequireRole(requiredRole: RequiredRole): GuardState {
       try {
         if (isAppLocked()) {
           // The session stays alive; only a fresh unlock may clear this.
-          if (active) router.replace("/login");
+          // Drop back to "checking" first so the protected tree unmounts
+          // instead of staying rendered as "allowed" while we navigate.
+          if (active) {
+            setState("checking");
+            router.replace("/login");
+          }
           return;
         }
 
@@ -48,7 +53,10 @@ export function useRequireRole(requiredRole: RequiredRole): GuardState {
         if (!active) return;
 
         if (authError || !user) {
-          router.replace("/login");
+          if (active) {
+            setState("checking");
+            router.replace("/login");
+          }
           return;
         }
 

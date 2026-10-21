@@ -105,6 +105,13 @@ export default function StudentTabLayout() {
       />
 
       <Tabs.Screen
+        name="quiz-attempt"
+        options={{
+          href: null,
+        }}
+      />
+
+      <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",

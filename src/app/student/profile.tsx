@@ -1,23 +1,29 @@
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
+import { deleteAccount } from "@/utils/deleteAccount";
 import { confirmAction, showNotice } from "@/utils/notify";
 import { uploadProfilePhoto } from "@/utils/uploadProfilePhoto";
+import { StatusPill } from "@/components/ui/chip";
+import { StateView } from "@/components/ui/state-view";
+import { colors } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Image,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const GREEN = "#176B45";
-const BG = "#F4F8F5";
+const GREEN = colors.primary;
+const BG = colors.background;
 const PHOTO_BUCKET = "profile-photos";
 
 type StudentProfile = {
@@ -27,7 +33,7 @@ type StudentProfile = {
   avatar_path: string | null;
 };
 
-type WorkingState = "photo" | "signingOut" | null;
+type WorkingState = "photo" | "signingOut" | "deleting" | null;
 
 export default function StudentProfileScreen() {
   const [loading, setLoading] = useState(true);
@@ -39,6 +45,12 @@ export default function StudentProfileScreen() {
   const [avatarFailed, setAvatarFailed] = useState(false);
 
   const [working, setWorking] = useState<WorkingState>(null);
+
+  // Re-authentication modal for account deletion.
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [showDeletePassword, setShowDeletePassword] = useState(false);
 
   const isWorking = working !== null;
 
@@ -190,38 +202,119 @@ export default function StudentProfileScreen() {
     );
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <ActivityIndicator size="large" color={GREEN} />
-        <Text style={styles.centerText}>Loading your profile...</Text>
-      </SafeAreaView>
+  // Step 1: explain the consequences and confirm before asking for a password.
+  const handleDeleteAccount = () => {
+    if (isWorking) return;
+
+    confirmAction(
+      "Delete My Account",
+      "This permanently deletes your StudyMate AI account and login.\n\n" +
+        "Your email and student ID will be free to register again, but your " +
+        "profile, photo, and personal quiz history will be removed.\n\n" +
+        "This cannot be undone.",
+      () => {
+        setDeletePassword("");
+        setDeleteError(null);
+        setShowDeletePassword(false);
+        setDeleteModalVisible(true);
+      },
+      { confirmLabel: "Continue", destructive: true },
     );
+  };
+
+  // Step 2: verify the password, delete on the server, then end the session.
+  const confirmDeleteAccount = async () => {
+    if (isWorking) return;
+
+    const password = deletePassword;
+    const accountEmail = email.trim();
+
+    if (!password) {
+      setDeleteError("Enter your password to confirm.");
+      return;
+    }
+
+    if (!accountEmail) {
+      setDeleteError("Your account email could not be verified.");
+      return;
+    }
+
+    setWorking("deleting");
+    setDeleteError(null);
+
+    try {
+      // Re-authenticate: proves the person deleting owns the account.
+      const { error: verifyError } = await supabase.auth.signInWithPassword({
+        email: accountEmail,
+        password,
+      });
+
+      if (verifyError) {
+        setDeleteError("Incorrect password. Please try again.");
+        setWorking(null);
+        return;
+      }
+
+      const result = await deleteAccount();
+
+      if (!result.ok && !result.partial) {
+        // The backend did not delete anything; stay signed in and report it.
+        setDeleteError(result.message);
+        setWorking(null);
+        return;
+      }
+
+      // Success (or the login was removed but cleanup was partial): the
+      // session is no longer usable, so end it and return to login.
+      setDeleteModalVisible(false);
+      setDeletePassword("");
+
+      try {
+        await supabase.auth.signOut();
+      } catch (signOutError) {
+        console.error("Sign out after deletion failed:", signOutError);
+      }
+
+      setAppLocked(false);
+      router.replace("/login");
+
+      showNotice(
+        result.partial ? "Account Deleted (Needs Cleanup)" : "Account Deleted",
+        result.message,
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Please try again.";
+      setDeleteError(message);
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const cancelDeleteAccount = () => {
+    if (isWorking) return;
+
+    setDeleteModalVisible(false);
+    setDeletePassword("");
+    setDeleteError(null);
+  };
+
+  if (loading) {
+    return <StateView variant="loading" title="Loading your profile..." />;
   }
 
   if (loadError) {
     return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <View style={[styles.bigIcon, styles.errorIcon]}>
-          <Ionicons name="cloud-offline-outline" size={28} color="#FFFFFF" />
-        </View>
-
-        <Text style={styles.centerTitle}>Unable to load profile</Text>
-        <Text style={styles.centerText}>{loadError}</Text>
-
-        <Pressable
-          onPress={() => {
-            setLoading(true);
-            setLoadError(null);
-            void loadProfile();
-          }}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
-        >
-          <Ionicons name="refresh" size={18} color="#FFFFFF" />
-          <Text style={styles.retryButtonText}>Try Again</Text>
-        </Pressable>
-      </SafeAreaView>
+      <StateView
+        variant="error"
+        title="Unable to load profile"
+        message={loadError}
+        onRetry={() => {
+          setLoading(true);
+          setLoadError(null);
+          void loadProfile();
+        }}
+      />
     );
   }
 
@@ -230,6 +323,7 @@ export default function StudentProfileScreen() {
   const showAvatar = avatarUrl && !avatarFailed;
   const uploadingPhoto = working === "photo";
   const signingOut = working === "signingOut";
+  const deleting = working === "deleting";
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
@@ -270,39 +364,19 @@ export default function StudentProfileScreen() {
           <Text style={styles.email}>{email || "No email found"}</Text>
 
           <View style={styles.badgeRow}>
-            <View style={styles.badge}>
-              <Ionicons name="school-outline" size={13} color={GREEN} />
-              <Text style={styles.badgeText}>Student</Text>
-            </View>
+            <StatusPill icon="school-outline" label="Student" tone="brand" />
 
-            <View
-              style={[
-                styles.badge,
+            <StatusPill
+              icon={
                 approvalStatus === "approved"
-                  ? styles.badgeApproved
-                  : styles.badgePending,
-              ]}
-            >
-              <Ionicons
-                name={
-                  approvalStatus === "approved"
-                    ? "checkmark-circle-outline"
-                    : "time-outline"
-                }
-                size={13}
-                color={approvalStatus === "approved" ? "#16834A" : "#B7791F"}
-              />
-              <Text
-                style={[
-                  styles.badgeText,
-                  approvalStatus === "approved"
-                    ? styles.badgeTextApproved
-                    : styles.badgeTextPending,
-                ]}
-              >
-                {approvalStatus === "approved" ? "Approved" : "Pending approval"}
-              </Text>
-            </View>
+                  ? "checkmark-circle-outline"
+                  : "time-outline"
+              }
+              label={
+                approvalStatus === "approved" ? "Approved" : "Pending approval"
+              }
+              tone={approvalStatus === "approved" ? "success" : "warning"}
+            />
           </View>
 
           <Pressable
@@ -419,54 +493,135 @@ export default function StudentProfileScreen() {
             </Text>
           </View>
         </Pressable>
+
+        <Pressable
+          onPress={handleDeleteAccount}
+          disabled={isWorking}
+          accessibilityRole="button"
+          accessibilityLabel="Delete my account permanently"
+          style={({ pressed }) => [
+            styles.actionButton,
+            styles.deleteButton,
+            pressed && styles.pressed,
+            isWorking && styles.disabled,
+          ]}
+        >
+          <Ionicons name="trash-outline" size={20} color="#C53030" />
+
+          <View style={styles.actionText}>
+            <Text style={[styles.actionTitle, styles.logoutTitle]}>
+              Delete My Account
+            </Text>
+            <Text style={styles.actionSubtitle}>
+              Permanently remove your account, login, and personal data.
+            </Text>
+          </View>
+        </Pressable>
       </ScrollView>
+
+      {/* Re-authentication before the irreversible delete */}
+      <Modal
+        visible={deleteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={cancelDeleteAccount}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalIcon}>
+              <Ionicons name="warning-outline" size={26} color="#C53030" />
+            </View>
+
+            <Text style={styles.modalTitle}>Confirm Account Deletion</Text>
+            <Text style={styles.modalMessage}>
+              Enter your password to permanently delete your account. This
+              cannot be undone.
+            </Text>
+
+            <View
+              style={[
+                styles.modalInput,
+                deleteError ? styles.modalInputInvalid : null,
+              ]}
+            >
+              <Ionicons name="lock-closed-outline" size={18} color="#849188" />
+              <TextInput
+                style={styles.modalInputField}
+                placeholder="Your password"
+                placeholderTextColor="#9BA69F"
+                value={deletePassword}
+                onChangeText={(text) => {
+                  setDeletePassword(text);
+                  if (deleteError) setDeleteError(null);
+                }}
+                secureTextEntry={!showDeletePassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!deleting}
+                returnKeyType="done"
+                onSubmitEditing={confirmDeleteAccount}
+              />
+              <Pressable
+                onPress={() => setShowDeletePassword((value) => !value)}
+                disabled={deleting}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  showDeletePassword ? "Hide password" : "Show password"
+                }
+              >
+                <Ionicons
+                  name={showDeletePassword ? "eye-off-outline" : "eye-outline"}
+                  size={19}
+                  color="#849188"
+                />
+              </Pressable>
+            </View>
+
+            {deleteError && (
+              <Text style={styles.modalErrorText}>{deleteError}</Text>
+            )}
+
+            <View style={styles.modalButtonRow}>
+              <Pressable
+                onPress={cancelDeleteAccount}
+                disabled={deleting}
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.modalCancelButton,
+                  pressed && styles.pressed,
+                  deleting && styles.disabled,
+                ]}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => void confirmDeleteAccount()}
+                disabled={deleting}
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.modalDeleteButton,
+                  pressed && styles.pressed,
+                  deleting && styles.disabled,
+                ]}
+              >
+                {deleting ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalDeleteText}>Delete Forever</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
-  center: {
-    flex: 1,
-    backgroundColor: BG,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 32,
-    gap: 12,
-  },
-  centerTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#20392B",
-    textAlign: "center",
-  },
-  centerText: {
-    fontSize: 13,
-    color: "#65776B",
-    textAlign: "center",
-    lineHeight: 19,
-  },
-  bigIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: 18,
-    backgroundColor: "#E8F3EB",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  errorIcon: { backgroundColor: "#B33A3A" },
-  retryButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: GREEN,
-    borderRadius: 12,
-    paddingHorizontal: 22,
-    minHeight: 48,
-    justifyContent: "center",
-    marginTop: 6,
-  },
-  retryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
   pressed: { opacity: 0.8 },
   disabled: { opacity: 0.6 },
   content: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40, gap: 4 },
@@ -520,20 +675,6 @@ const styles = StyleSheet.create({
   name: { fontSize: 20, fontWeight: "800", color: "#20392B" },
   email: { fontSize: 13, color: "#718078" },
   badgeRow: { flexDirection: "row", gap: 8, marginTop: 8, flexWrap: "wrap" },
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "#E8F3EB",
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 20,
-  },
-  badgeApproved: { backgroundColor: "#E4F6E9" },
-  badgePending: { backgroundColor: "#FFF5D9" },
-  badgeText: { fontSize: 12, fontWeight: "700", color: GREEN },
-  badgeTextApproved: { color: "#16834A" },
-  badgeTextPending: { color: "#B7791F" },
   photoButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -590,4 +731,98 @@ const styles = StyleSheet.create({
   logoutTitle: { color: "#C53030" },
   actionSubtitle: { fontSize: 11, lineHeight: 16, color: "#758479" },
   logoutButton: { backgroundColor: "#FDF6F6", borderColor: "#F3D4D4" },
+  deleteButton: { backgroundColor: "#FDF6F6", borderColor: "#E9BEBE" },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(16, 32, 24, 0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 26,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 400,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: "#E5EDE7",
+    alignItems: "center",
+  },
+  modalIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    backgroundColor: "#FBE9E9",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#20392B",
+    textAlign: "center",
+  },
+  modalMessage: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#758479",
+    textAlign: "center",
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  modalInput: {
+    width: "100%",
+    minHeight: 49,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#E0E8E1",
+    backgroundColor: "#FAFCFA",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+  },
+  modalInputInvalid: { borderColor: "#D64545" },
+  modalInputField: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    color: "#20392B",
+    paddingVertical: 12,
+  },
+  modalErrorText: {
+    width: "100%",
+    marginTop: 8,
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#C53030",
+  },
+  modalButtonRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 18,
+    width: "100%",
+  },
+  modalCancelButton: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#C8D8CD",
+    backgroundColor: "#FFFFFF",
+  },
+  modalCancelText: { fontSize: 13, fontWeight: "700", color: "#52685A" },
+  modalDeleteButton: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+    backgroundColor: "#C53030",
+  },
+  modalDeleteText: { fontSize: 13, fontWeight: "800", color: "#FFFFFF" },
 });

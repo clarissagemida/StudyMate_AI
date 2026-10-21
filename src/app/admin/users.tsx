@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { deleteAccount } from "@/utils/deleteAccount";
 import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -130,9 +131,6 @@ export default function AdminUsersScreen() {
         error: authError,
       } = await supabase.auth.getUser();
 
-      console.log("[AdminUsers] Authenticated user ID:", user?.id ?? null);
-      console.log("[AdminUsers] Authenticated email:", user?.email ?? null);
-
       if (authError) {
         console.error("[AdminUsers] Authentication error:", authError);
       }
@@ -152,15 +150,6 @@ export default function AdminUsersScreen() {
           .select("role")
           .eq("id", user.id)
           .maybeSingle();
-
-      console.log(
-        "[AdminUsers] Current profile role:",
-        currentProfile?.role ?? null,
-      );
-      console.log(
-        "[AdminUsers] Profile lookup error:",
-        currentProfileError?.message ?? null,
-      );
 
       if (currentProfileError) {
         console.error(
@@ -352,6 +341,59 @@ export default function AdminUsersScreen() {
             setUpdatingId(profile.id);
 
             try {
+              // Approving must grant the role that matches the stored
+              // requested_role, so it goes through a trusted SECURITY DEFINER
+              // RPC. Reject / set-pending only change approval_status.
+              if (nextStatus === "approved") {
+                const { data, error } = await supabase.rpc(
+                  "approve_registration",
+                  { target_id: profile.id },
+                );
+
+                if (error) {
+                  console.error("[AdminUsers] Approval RPC error:", {
+                    message: error.message,
+                    code: error.code,
+                    details: error.details,
+                    hint: error.hint,
+                  });
+
+                  const errorCode = error.code ? `\n\nCode: ${error.code}` : "";
+                  const errorDetails = error.details
+                    ? `\n\nDetails: ${error.details}`
+                    : "";
+                  const errorHint = error.hint ? `\n\nHint: ${error.hint}` : "";
+
+                  showNotice(
+                    "Approval Failed",
+                    `${error.message}${errorCode}${errorDetails}${errorHint}`,
+                  );
+                  return;
+                }
+
+                const approved = Array.isArray(data) ? data[0] : data;
+
+                if (!approved) {
+                  showNotice(
+                    "No Changes Made",
+                    "The registration was not approved. Check that you are an approved administrator.",
+                  );
+                  return;
+                }
+
+                // The RPC also changed `role`, so refresh the whole list and
+                // dashboard counts instead of patching a single field.
+                await fetchProfiles(true);
+
+                showNotice(
+                  "Success",
+                  `${profile.full_name || "The account"} has been approved as ${
+                    approved.role === "teacher" ? "a teacher" : "a student"
+                  }.`,
+                );
+                return;
+              }
+
               const { data, error } = await supabase
                 .from("profiles")
                 .update({ approval_status: nextStatus })
@@ -406,11 +448,9 @@ export default function AdminUsersScreen() {
               showNotice(
                 "Success",
                 `${profile.full_name || "The account"} has been ${
-                  nextStatus === "approved"
-                    ? "approved"
-                    : nextStatus === "rejected"
-                      ? "rejected"
-                      : "returned to pending status"
+                  nextStatus === "rejected"
+                    ? "rejected"
+                    : "returned to pending status"
                 }.`,
               );
             } catch (error) {
@@ -431,8 +471,80 @@ export default function AdminUsersScreen() {
         },
       );
     },
-    [],
+    [fetchProfiles],
   );
+
+  // Permanently delete a student/teacher account through the trusted backend.
+  // The Edge Function re-verifies the caller's admin role on the server, so a
+  // hidden button is never the only protection.
+  const deleteUser = useCallback(
+    (profile: Profile) => {
+      const name = profile.full_name || "this account";
+      const role = capitalize(profile.role ?? "student");
+      const identifier = profile.student_id
+        ? `Student ID: ${profile.student_id}`
+        : "No student ID";
+      const email = profile.email || "Email unavailable";
+
+      confirmAction(
+        "Delete Account Permanently",
+        `You are about to permanently delete:\n\n` +
+          `Name: ${name}\n` +
+          `Role: ${role}\n` +
+          `${identifier}\n` +
+          `Email: ${email}\n\n` +
+          `This cannot be undone. The account and its login will be removed, ` +
+          `and the email and student ID will be free to register again.\n\n` +
+          `Shared materials and quizzes created by this teacher are kept.`,
+        () => {
+          void (async () => {
+            setUpdatingId(profile.id);
+
+            try {
+              const result = await deleteAccount(profile.id);
+
+              if (result.ok) {
+                setProfiles((currentProfiles) =>
+                  currentProfiles.filter((item) => item.id !== profile.id),
+                );
+
+                showNotice(
+                  "Account Deleted",
+                  `${name} has been permanently deleted.`,
+                );
+
+                // Refresh so counts and any pagination stay consistent.
+                await fetchProfiles(true);
+              } else {
+                showNotice(
+                  result.partial ? "Partially Completed" : "Deletion Failed",
+                  result.message,
+                );
+
+                // A partial result means the login is gone even if the row
+                // lingered; refresh so the list reflects reality either way.
+                if (result.partial) {
+                  await fetchProfiles(true);
+                }
+              }
+            } catch (error) {
+              console.error("Unexpected deletion error:", error);
+
+              showNotice(
+                "Deletion Failed",
+                "An unexpected error occurred. Please try again.",
+              );
+            } finally {
+              setUpdatingId(null);
+            }
+          })();
+        },
+        { confirmLabel: "Delete Permanently", destructive: true },
+      );
+    },
+    [fetchProfiles],
+  );
+
   const renderProfile = ({ item }: { item: Profile }) => {
     const status = getStatus(item);
     const statusColor = getStatusColor(status);
@@ -615,6 +727,33 @@ export default function AdminUsersScreen() {
                 <Text style={styles.resetMenuText}>Set to Pending</Text>
               </Pressable>
             )}
+
+            {displayRole !== "admin" && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Permanently delete ${
+                  item.full_name || "this account"
+                }`}
+                onPress={() => {
+                  setOpenMenuId(null);
+                  deleteUser(item);
+                }}
+                style={({ pressed }) => [
+                  styles.menuOption,
+                  styles.menuOptionDestructive,
+                  pressed && styles.menuOptionPressed,
+                ]}
+              >
+                <Ionicons
+                  name="trash-outline"
+                  size={19}
+                  color={COLORS.danger}
+                />
+                <Text style={styles.deleteMenuText}>
+                  Delete Account Permanently
+                </Text>
+              </Pressable>
+            )}
           </View>
         )}
       </View>
@@ -715,7 +854,9 @@ export default function AdminUsersScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Go back"
-            onPress={() => router.back()}
+            onPress={() =>
+              router.canGoBack() ? router.back() : router.replace("/admin/home")
+            }
             style={styles.backButton}
           >
             <Ionicons name="arrow-back" size={22} color={COLORS.text} />
@@ -1361,6 +1502,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: COLORS.primary,
+  },
+  menuOptionDestructive: {
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: 6,
+  },
+  deleteMenuText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: COLORS.danger,
   },
   buttonPressed: {
     opacity: 0.75,

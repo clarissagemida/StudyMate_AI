@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { authenticateWithBiometrics } from "@/utils/biometrics";
+import type { User } from "@supabase/supabase-js";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useState } from "react";
@@ -30,8 +31,37 @@ export default function LoginScreen() {
   const isBusy = loading !== null;
 
   // Verify the account before opening any dashboard.
-  const verifyAccountAndNavigate = async (userId: string) => {
+  const verifyAccountAndNavigate = async (user: User) => {
     try {
+      // Supabase Auth is the sole source of truth for email verification.
+      // An unconfirmed account must not reach protected features; send the
+      // user to the verification screen instead. No local flag is trusted.
+      if (!user.email_confirmed_at) {
+        await supabase.auth.signOut();
+
+        const targetEmail = (user.email ?? "").trim().toLowerCase();
+
+        Alert.alert(
+          "Email Not Verified",
+          "Please verify your email address before signing in. We can send a new code.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Verify Email",
+              onPress: () => {
+                router.replace({
+                  pathname: "/verify-email",
+                  params: targetEmail ? { email: targetEmail } : {},
+                });
+              },
+            },
+          ],
+        );
+        return;
+      }
+
+      const userId = user.id;
+
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("role, approval_status")
@@ -39,6 +69,10 @@ export default function LoginScreen() {
         .maybeSingle();
 
       if (profileError) {
+        // The session was already created by the caller; drop it so a failed
+        // verification never leaves a half-authenticated state behind.
+        await supabase.auth.signOut();
+
         Alert.alert(
           "Connection Error",
           "We couldn't verify your account. Check your internet connection and try again.",
@@ -99,7 +133,15 @@ export default function LoginScreen() {
             "Your account role could not be verified. Please contact the administrator.",
           );
       }
-    } catch {
+    } catch (error) {
+      console.error("Account verification error:", error);
+
+      try {
+        await supabase.auth.signOut();
+      } catch (signOutError) {
+        console.error("Sign out after verification error failed:", signOutError);
+      }
+
       Alert.alert(
         "Verification Error",
         "We couldn't verify your account. Please try again.",
@@ -138,7 +180,7 @@ export default function LoginScreen() {
         return;
       }
 
-      await verifyAccountAndNavigate(data.user.id);
+      await verifyAccountAndNavigate(data.user);
     } catch {
       Alert.alert(
         "Connection Error",
@@ -202,7 +244,7 @@ export default function LoginScreen() {
       }
 
       // 4. Recheck the user's role and approval status.
-      await verifyAccountAndNavigate(verifiedUser.id);
+      await verifyAccountAndNavigate(verifiedUser);
     } catch {
       Alert.alert(
         "Biometric Login Error",
@@ -228,7 +270,7 @@ export default function LoginScreen() {
             {/* StudyMate branding */}
             <View style={styles.brand}>
               <Image
-                source={require("../../assets/images/studymate_logo.png")}
+                source={require("../../assets/images/image.png")}
                 style={styles.logo}
                 resizeMode="contain"
                 accessibilityLabel="StudyMate AI mascot"

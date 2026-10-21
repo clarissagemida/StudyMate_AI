@@ -282,6 +282,7 @@ export default function AdminAccountScreen() {
       }
 
       let updatedAvatarPath = avatarPath;
+      let uploadedNewPath: string | null = null;
 
       if (selectedPhoto) {
         // Read the selected image from Base64 instead of fetch(localUri).
@@ -306,6 +307,7 @@ export default function AdminAccountScreen() {
 
         if (uploadError) throw uploadError;
 
+        uploadedNewPath = newPath;
         updatedAvatarPath = newPath;
       }
 
@@ -320,27 +322,59 @@ export default function AdminAccountScreen() {
         .select("id")
         .maybeSingle();
 
-      if (updateError) throw updateError;
-
-      if (!updatedProfile) {
+      if (updateError || !updatedProfile) {
+        // The database write did not land: remove the file we just uploaded so
+        // it does not leak in storage.
+        if (uploadedNewPath) {
+          const { error: cleanupError } = await supabase.storage
+            .from(PHOTO_BUCKET)
+            .remove([uploadedNewPath]);
+          if (cleanupError) {
+            console.error("Photo cleanup failed:", cleanupError.message);
+          }
+        }
+        if (updateError) throw updateError;
         throw new Error(
           "No profile row was updated. Check the profiles table and its row-level security policies.",
         );
       }
 
-      // Generate a fresh URL after the upload and database update.
-      let newAvatarUrl: string | null = null;
+      // The save is committed at this point. A failed signed-URL request only
+      // means the photo cannot be displayed yet — never report it as a save
+      // failure or the UI will disagree with the database.
+      const previousAvatarPath = avatarPath;
 
-      if (updatedAvatarPath) {
-        newAvatarUrl = await getSignedPhotoUrl(updatedAvatarPath);
+      if (
+        previousAvatarPath &&
+        previousAvatarPath !== updatedAvatarPath
+      ) {
+        const { error: removeError } = await supabase.storage
+          .from(PHOTO_BUCKET)
+          .remove([previousAvatarPath]);
+        if (removeError) {
+          console.error("Old photo cleanup failed:", removeError.message);
+        }
       }
 
       setFullName(trimmedName);
       setAvatarPath(updatedAvatarPath);
-      setAvatarUrl(newAvatarUrl);
-      setAvatarImageFailed(false);
       setSelectedPhoto(null);
       setEditing(false);
+
+      if (updatedAvatarPath) {
+        try {
+          const url = await getSignedPhotoUrl(updatedAvatarPath);
+          setAvatarUrl(url);
+          setAvatarImageFailed(false);
+        } catch (photoError) {
+          console.error("Profile photo URL error:", photoError);
+          setAvatarUrl(null);
+          setAvatarImageFailed(true);
+        }
+      } else {
+        setAvatarUrl(null);
+        setAvatarImageFailed(false);
+      }
 
       Alert.alert("Profile Updated", "Your profile changes have been saved.");
     } catch (error) {

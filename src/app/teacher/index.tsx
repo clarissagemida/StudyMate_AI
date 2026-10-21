@@ -1,10 +1,14 @@
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
+import { Card } from "@/components/ui/card";
+import { Chip } from "@/components/ui/chip";
+import { SectionHeader } from "@/components/ui/section-header";
+import { StateView } from "@/components/ui/state-view";
+import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   Pressable,
   RefreshControl,
@@ -15,9 +19,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const GREEN = "#176B45";
-const DARK_GREEN = "#104D33";
-const BG = "#F4F8F5";
+const GREEN = colors.primary;
+const DARK_GREEN = colors.primaryDark;
+const BG = colors.background;
 const PHOTO_BUCKET = "profile-photos";
 
 type MaterialRow = {
@@ -187,40 +191,22 @@ export default function TeacherDashboardScreen() {
 
   if (loading && !data) {
     return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <View style={styles.heroIcon}>
-          <Ionicons name="school" size={30} color="#FFFFFF" />
-        </View>
-
-        <ActivityIndicator size="large" color={GREEN} style={styles.spinner} />
-
-        <Text style={styles.centerTitle}>Preparing your dashboard</Text>
-        <Text style={styles.centerText}>
-          Loading your profile and teaching statistics...
-        </Text>
-      </SafeAreaView>
+      <StateView
+        variant="loading"
+        title="Preparing your dashboard"
+        message="Loading your profile and teaching statistics..."
+      />
     );
   }
 
   if (error && !data) {
     return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <View style={[styles.heroIcon, styles.errorIcon]}>
-          <Ionicons name="cloud-offline-outline" size={30} color="#FFFFFF" />
-        </View>
-
-        <Text style={styles.centerTitle}>Unable to load dashboard</Text>
-        <Text style={styles.centerText}>{error}</Text>
-
-        <Pressable
-          onPress={handleRetry}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
-        >
-          <Ionicons name="refresh" size={18} color="#FFFFFF" />
-          <Text style={styles.retryButtonText}>Try Again</Text>
-        </Pressable>
-      </SafeAreaView>
+      <StateView
+        variant="error"
+        title="Unable to load dashboard"
+        message={error}
+        onRetry={handleRetry}
+      />
     );
   }
 
@@ -274,7 +260,7 @@ export default function TeacherDashboardScreen() {
 
         {/* Real statistics; "—" means the table is not configured yet */}
         <View style={styles.statsRow}>
-          <View style={styles.statCard}>
+          <Card style={styles.statCard}>
             <View style={styles.statIcon}>
               <Ionicons name="book-outline" size={20} color={GREEN} />
             </View>
@@ -282,9 +268,9 @@ export default function TeacherDashboardScreen() {
               {materials ? materials.length : "—"}
             </Text>
             <Text style={styles.statLabel}>Learning materials</Text>
-          </View>
+          </Card>
 
-          <View style={styles.statCard}>
+          <Card style={styles.statCard}>
             <View style={styles.statIcon}>
               <Ionicons name="clipboard-outline" size={20} color={GREEN} />
             </View>
@@ -292,17 +278,17 @@ export default function TeacherDashboardScreen() {
               {quizzes === null ? "—" : quizzes}
             </Text>
             <Text style={styles.statLabel}>Quizzes</Text>
-          </View>
+          </Card>
 
-          <View style={styles.statCard}>
+          <Card style={styles.statCard}>
             <View style={styles.statIcon}>
               <Ionicons name="checkmark-done-outline" size={20} color={GREEN} />
             </View>
             <Text style={styles.statValue}>
               {publishedQuizzes === null ? "—" : publishedQuizzes}
             </Text>
-            <Text style={styles.statLabel}>Published quizzes</Text>
-          </View>
+            <Text style={styles.statLabel}>Published</Text>
+          </Card>
         </View>
 
         {tablesMissing && (
@@ -313,7 +299,7 @@ export default function TeacherDashboardScreen() {
                 ? "Statistics appear once the materials and quiz tables are added to Supabase (run the SQL files in the supabase/ folder)."
                 : materials === null
                   ? "The learning materials table is not set up yet. Run supabase/materials.sql in the Supabase SQL editor to enable material statistics."
-                  : "The quiz tables are not set up yet. They arrive with the AI Quiz Studio update."}
+                  : "The quiz tables are not set up yet. Run supabase/quizzes.sql in the Supabase SQL editor to enable quiz statistics."}
             </Text>
           </View>
         )}
@@ -342,92 +328,82 @@ export default function TeacherDashboardScreen() {
 
         <View style={styles.pendingAction}>
           <View style={styles.pendingActionIcon}>
-            <Ionicons name="sparkles-outline" size={22} color={GREEN} />
+            <Ionicons name="clipboard-outline" size={22} color={GREEN} />
           </View>
           <View style={styles.primaryActionText}>
-            <Text style={styles.pendingActionTitle}>Create AI quiz</Text>
+            <Text style={styles.pendingActionTitle}>Create a quiz</Text>
             <Text style={styles.pendingActionSubtitle}>
-              The AI Quiz Studio is not available yet
+              Add multiple-choice questions and publish them to students
             </Text>
           </View>
-          <View style={styles.soonChip}>
-            <Text style={styles.soonChipText}>SOON</Text>
-          </View>
+          <Pressable
+            onPress={() => router.push("/teacher/quizzes")}
+            accessibilityRole="button"
+            accessibilityLabel="Open quizzes"
+            hitSlop={6}
+          >
+            <Ionicons name="chevron-forward" size={20} color={GREEN} />
+          </Pressable>
         </View>
 
         {/* Recent materials */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Recent materials</Text>
-
-          {materials && materials.length > 0 && (
-            <Pressable
-              onPress={() => router.push("/teacher/material")}
-              accessibilityRole="button"
-            >
-              <Text style={styles.sectionLink}>See all</Text>
-            </Pressable>
-          )}
-        </View>
+        <SectionHeader
+          title="Recent materials"
+          actionLabel={materials && materials.length > 0 ? "See all" : undefined}
+          onAction={
+            materials && materials.length > 0
+              ? () => router.push("/teacher/material")
+              : undefined
+          }
+        />
 
         {materials === null ? (
-          <View style={styles.emptyBox}>
-            <Ionicons name="folder-open-outline" size={26} color="#93A19A" />
+          <Card style={styles.emptyBox}>
+            <Ionicons name="folder-open-outline" size={26} color={colors.textFaint} />
             <Text style={styles.emptyTitle}>No materials yet</Text>
             <Text style={styles.emptyText}>
               Materials you create will be listed here.
             </Text>
-          </View>
+          </Card>
         ) : recentMaterials.length === 0 ? (
-          <View style={styles.emptyBox}>
-            <Ionicons name="document-text-outline" size={26} color="#93A19A" />
+          <Card style={styles.emptyBox}>
+            <Ionicons name="document-text-outline" size={26} color={colors.textFaint} />
             <Text style={styles.emptyTitle}>Nothing here yet</Text>
             <Text style={styles.emptyText}>
               Create your first learning material to get started.
             </Text>
-          </View>
+          </Card>
         ) : (
           recentMaterials.map((material) => (
             <Pressable
               key={material.id}
               onPress={() => router.push("/teacher/material")}
               accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.materialRow,
-                pressed && styles.pressed,
-              ]}
+              style={({ pressed }) => pressed && styles.pressed}
             >
-              <View style={styles.materialIcon}>
-                <Ionicons name="document-text-outline" size={20} color={GREEN} />
-              </View>
+              <Card style={styles.materialRow}>
+                <View style={styles.materialIcon}>
+                  <Ionicons
+                    name="document-text-outline"
+                    size={20}
+                    color={GREEN}
+                  />
+                </View>
 
-              <View style={styles.materialText}>
-                <Text style={styles.materialTitle} numberOfLines={1}>
-                  {material.title}
-                </Text>
-                <Text style={styles.materialMeta} numberOfLines={1}>
-                  {material.subject} · {formatDate(material.created_at)}
-                </Text>
-              </View>
+                <View style={styles.materialText}>
+                  <Text style={styles.materialTitle} numberOfLines={1}>
+                    {material.title}
+                  </Text>
+                  <Text style={styles.materialMeta} numberOfLines={1}>
+                    {material.subject} · {formatDate(material.created_at)}
+                  </Text>
+                </View>
 
-              <View
-                style={[
-                  styles.statusChip,
-                  material.status === "published"
-                    ? styles.statusPublished
-                    : styles.statusDraft,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.statusText,
-                    material.status === "published"
-                      ? styles.statusTextPublished
-                      : styles.statusTextDraft,
-                  ]}
-                >
-                  {material.status === "published" ? "Published" : "Draft"}
-                </Text>
-              </View>
+                <Chip
+                  label={material.status === "published" ? "Published" : "Draft"}
+                  tone={material.status === "published" ? "success" : "warning"}
+                />
+              </Card>
             </Pressable>
           ))
         )}
@@ -440,57 +416,15 @@ export default function TeacherDashboardScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
-  container: { padding: 20, paddingBottom: 40, gap: 14 },
-  center: {
-    flex: 1,
-    backgroundColor: BG,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 32,
-    gap: 10,
-  },
-  centerTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#20392B",
-    textAlign: "center",
-  },
-  centerText: {
-    fontSize: 13,
-    color: "#65776B",
-    textAlign: "center",
-    lineHeight: 19,
-  },
-  spinner: { marginTop: 6 },
-  heroIcon: {
-    width: 66,
-    height: 66,
-    borderRadius: 22,
-    backgroundColor: GREEN,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  errorIcon: { backgroundColor: "#B33A3A" },
-  retryButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: GREEN,
-    borderRadius: 12,
-    paddingHorizontal: 22,
-    minHeight: 48,
-    justifyContent: "center",
-    marginTop: 8,
-  },
-  retryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
-  pressed: { opacity: 0.8 },
+  container: { padding: spacing.xl, paddingBottom: spacing.xxxl + 8, gap: spacing.md },
+  pressed: { opacity: 0.9 },
   welcomeCard: {
     backgroundColor: GREEN,
-    borderRadius: 22,
-    padding: 20,
+    borderRadius: radius.xxl,
+    padding: spacing.xl,
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: spacing.md,
   },
   welcomeText: { flex: 1 },
   welcomeEyebrow: {
@@ -503,7 +437,7 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 21,
     fontWeight: "800",
-    marginTop: 8,
+    marginTop: spacing.sm,
   },
   welcomeSubtitle: {
     color: "#DFF1E6",
@@ -514,45 +448,41 @@ const styles = StyleSheet.create({
   avatar: {
     width: 66,
     height: 66,
-    borderRadius: 22,
+    borderRadius: radius.xxl,
     overflow: "hidden",
     backgroundColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
   },
   avatarImage: { width: "100%", height: "100%" },
-  statsRow: { flexDirection: "row", gap: 10 },
+  statsRow: { flexDirection: "row", gap: spacing.sm + 2 },
   statCard: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#E5EDE7",
+    padding: spacing.md + 2,
     alignItems: "flex-start",
   },
   statIcon: {
     width: 40,
     height: 40,
-    borderRadius: 13,
-    backgroundColor: "#E8F3EB",
+    borderRadius: radius.md,
+    backgroundColor: colors.primarySoft,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
+    marginBottom: spacing.sm + 2,
   },
   statValue: { fontSize: 24, fontWeight: "800", color: DARK_GREEN },
   statLabel: {
     fontSize: 11,
-    color: "#65776B",
+    color: colors.textMuted,
     fontWeight: "600",
     marginTop: 3,
   },
   notice: {
     flexDirection: "row",
-    gap: 10,
-    backgroundColor: "#E8F3EB",
-    borderRadius: 15,
-    padding: 14,
+    gap: spacing.sm + 2,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     alignItems: "flex-start",
   },
   noticeText: { flex: 1, fontSize: 12, lineHeight: 18, color: "#3F5A49" },
@@ -560,26 +490,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "800",
     color: DARK_GREEN,
-    marginTop: 4,
+    marginTop: spacing.xs,
   },
-  sectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  sectionLink: { fontSize: 13, fontWeight: "700", color: GREEN },
   primaryAction: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: spacing.md,
     backgroundColor: GREEN,
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
   },
   primaryActionIcon: {
     width: 44,
     height: 44,
-    borderRadius: 14,
+    borderRadius: radius.md,
     backgroundColor: "rgba(255,255,255,0.18)",
     alignItems: "center",
     justifyContent: "center",
@@ -589,89 +513,68 @@ const styles = StyleSheet.create({
   primaryActionSubtitle: {
     color: "#DFF1E6",
     fontSize: 11,
-    marginTop: 4,
+    marginTop: spacing.xs,
     lineHeight: 16,
   },
   pendingAction: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 16,
+    gap: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     borderWidth: 1,
-    borderColor: "#E5EDE7",
+    borderColor: colors.border,
   },
   pendingActionIcon: {
     width: 44,
     height: 44,
-    borderRadius: 14,
-    backgroundColor: "#E8F3EB",
+    borderRadius: radius.md,
+    backgroundColor: colors.primarySoft,
     alignItems: "center",
     justifyContent: "center",
   },
   pendingActionTitle: { fontSize: 15, fontWeight: "800", color: DARK_GREEN },
-  pendingActionSubtitle: { fontSize: 11, color: "#758479", marginTop: 4 },
-  soonChip: {
-    backgroundColor: "#F0F4F1",
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+  pendingActionSubtitle: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: spacing.xs,
   },
-  soonChipText: { fontSize: 10, fontWeight: "800", color: "#7A897F", letterSpacing: 1 },
   emptyBox: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E5EDE7",
-    padding: 24,
+    padding: spacing.xxl,
     alignItems: "center",
     gap: 6,
   },
-  emptyTitle: { fontSize: 14, fontWeight: "800", color: "#20392B" },
+  emptyTitle: { fontSize: 14, fontWeight: "800", color: colors.textPrimary },
   emptyText: {
     fontSize: 12,
-    color: "#758479",
+    color: colors.textMuted,
     textAlign: "center",
     lineHeight: 17,
   },
   materialRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#E5EDE7",
-    padding: 14,
+    gap: spacing.md,
+    padding: spacing.md + 2,
   },
   materialIcon: {
     width: 42,
     height: 42,
-    borderRadius: 13,
-    backgroundColor: "#E8F3EB",
+    borderRadius: radius.md,
+    backgroundColor: colors.primarySoft,
     alignItems: "center",
     justifyContent: "center",
   },
   materialText: { flex: 1 },
-  materialTitle: { fontSize: 14, fontWeight: "700", color: "#20392B" },
-  materialMeta: { fontSize: 11, color: "#758479", marginTop: 3 },
-  statusChip: {
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  statusPublished: { backgroundColor: "#E4F6E9" },
-  statusDraft: { backgroundColor: "#FFF5D9" },
-  statusText: { fontSize: 10, fontWeight: "800" },
-  statusTextPublished: { color: "#16834A" },
-  statusTextDraft: { color: "#B7791F" },
+  materialTitle: { fontSize: 14, fontWeight: "700", color: colors.textPrimary },
+  materialMeta: { fontSize: 11, color: colors.textMuted, marginTop: 3 },
   footer: {
     textAlign: "center",
     color: "#A0AAA3",
     fontSize: 10,
     fontWeight: "700",
     letterSpacing: 1.5,
-    marginTop: 12,
+    marginTop: spacing.md,
   },
 });

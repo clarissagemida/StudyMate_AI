@@ -70,7 +70,9 @@ function AdminDrawerContent() {
   const isWorking = working !== null;
   const signingOut = working === "signingOut";
 
-  const loadAdminProfile = useCallback(async () => {
+  const loadAdminProfile = useCallback(async (isActive?: () => boolean) => {
+    const active = () => isActive?.() ?? true;
+
     try {
       const {
         data: { user },
@@ -78,6 +80,8 @@ function AdminDrawerContent() {
       } = await supabase.auth.getUser();
 
       if (authError) throw authError;
+
+      if (!active()) return;
 
       if (!user) {
         setAdminName("Administrator");
@@ -93,6 +97,8 @@ function AdminDrawerContent() {
         .maybeSingle();
 
       if (error) throw error;
+
+      if (!active()) return;
 
       const profile = data as AdminProfile | null;
 
@@ -110,8 +116,11 @@ function AdminDrawerContent() {
 
       if (imageError) throw imageError;
 
+      if (!active()) return;
+
       setAdminAvatarUrl(signedImage?.signedUrl ?? null);
     } catch (error) {
+      if (!active()) return;
       console.error("Unable to load sidebar admin profile:", error);
       setAdminAvatarUrl(null);
     }
@@ -121,11 +130,17 @@ function AdminDrawerContent() {
   // awaited inside an effect-local runner so state is never applied
   // synchronously while the effect executes.
   useEffect(() => {
+    let active = true;
+
     const run = async () => {
-      await loadAdminProfile();
+      await loadAdminProfile(() => active);
     };
 
     void run();
+
+    return () => {
+      active = false;
+    };
   }, [loadAdminProfile, pathname]);
 
   // Refresh profile information when the authentication session changes.

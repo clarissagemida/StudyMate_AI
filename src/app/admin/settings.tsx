@@ -29,26 +29,38 @@ export default function AdminSettingsScreen() {
     let active = true;
 
     async function load() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
 
-      if (!active || !user) {
-        setLoading(false);
-        return;
+        if (userError || !user) {
+          if (userError) console.error("Settings load error:", userError.message);
+          return;
+        }
+
+        if (!active) return;
+        setEmail(user.email ?? null);
+
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          console.error("Settings profile error:", profileError.message);
+          return;
+        }
+
+        if (!active) return;
+        setAdminName(profile?.full_name || "Administrator");
+      } catch (error) {
+        console.error("Settings load error:", error);
+      } finally {
+        if (active) setLoading(false);
       }
-
-      setEmail(user.email ?? null);
-
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("full_name")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      if (!active) return;
-      setAdminName(profile?.full_name || "Administrator");
-      setLoading(false);
     }
 
     void load();
@@ -60,15 +72,24 @@ export default function AdminSettingsScreen() {
 
   async function handleLogout() {
     setSigningOut(true);
-    const { error } = await supabase.auth.signOut();
-    setSigningOut(false);
+    try {
+      const { error } = await supabase.auth.signOut();
 
-    if (error) {
-      Alert.alert("Logout failed", error.message);
-      return;
+      if (error) {
+        Alert.alert("Logout failed", error.message);
+        return;
+      }
+
+      router.replace("/login");
+    } catch (error) {
+      console.error("Logout error:", error);
+      Alert.alert(
+        "Logout failed",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    } finally {
+      setSigningOut(false);
     }
-
-    router.replace("/login");
   }
 
   return (

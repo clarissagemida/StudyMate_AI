@@ -7,8 +7,6 @@ const GREEN = "#176B45";
 const INACTIVE = "#8A978F";
 const BORDER = "#E7EEE9";
 
-// Only routes that exist as files in this folder are registered. AI Quiz
-// Studio, Results, and Profile are added here once their screens are built.
 export default function TeacherTabLayout() {
   // Session + teacher role + approval + central lock, enforced before any
   // tab can mount (deep links included).
@@ -71,6 +69,34 @@ export default function TeacherTabLayout() {
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons
               name={focused ? "book" : "book-outline"}
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="quizzes"
+        options={{
+          title: "Quizzes",
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons
+              name={focused ? "clipboard" : "clipboard-outline"}
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons
+              name={focused ? "person" : "person-outline"}
               size={size}
               color={color}
             />

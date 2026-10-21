@@ -34,7 +34,7 @@ export default function HomeScreen() {
         } = await supabase.auth.getUser();
 
         if (authError || !user) {
-          router.replace("/login");
+          if (active) router.replace("/login");
           return;
         }
 
@@ -53,6 +53,9 @@ export default function HomeScreen() {
 
         if (!profile || profile.approval_status !== "approved") {
           await supabase.auth.signOut();
+
+          if (!active) return;
+
           Alert.alert(
             "Access Restricted",
             "Your account is no longer approved. Please contact the administrator.",

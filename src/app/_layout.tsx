@@ -4,7 +4,9 @@ import { useColorScheme } from "react-native";
 
 import { AnimatedSplashOverlay } from "@/components/animated-icon";
 
-void SplashScreen.preventAutoHideAsync();
+void SplashScreen.preventAutoHideAsync().catch(() => {
+  // Already hidden or unsupported on this platform — safe to ignore.
+});
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
@@ -17,6 +19,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="login" />
         <Stack.Screen name="register" />
+        <Stack.Screen name="verify-email" />
         <Stack.Screen name="home" />
         <Stack.Screen name="student" />
         <Stack.Screen name="teacher" />

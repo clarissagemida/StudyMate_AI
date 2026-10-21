@@ -22,6 +22,36 @@ type DashboardStats = {
   teachers: number;
 };
 
+type RecentRegistration = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  role: string | null;
+  requested_role: string | null;
+  approval_status: string | null;
+  created_at: string | null;
+};
+
+type ApprovalStatus = "pending" | "approved" | "rejected";
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function formatRegistrationDate(value: string | null) {
+  if (!value) return "Date unavailable";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
+
+  return date.toLocaleDateString("en-PH", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 type DashboardError = {
   message?: string;
   code?: string;
@@ -40,6 +70,10 @@ export default function AdminHomeScreen() {
     students: 0,
     teachers: 0,
   });
+
+  const [recentRegistrations, setRecentRegistrations] = useState<
+    RecentRegistration[]
+  >([]);
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -119,6 +153,25 @@ export default function AdminHomeScreen() {
         students: studentsResult.count ?? 0,
         teachers: teachersResult.count ?? 0,
       });
+
+      // Recent registration activity: the latest non-admin accounts, newest
+      // first. Uses real rows only; shows an empty state when there is none.
+      const { data: recent, error: recentError } = await supabase
+        .from("profiles")
+        .select(
+          "id, full_name, email, role, requested_role, approval_status, created_at",
+        )
+        .or("role.neq.admin,role.is.null")
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      if (recentError) {
+        // Non-fatal: the dashboard still works without this list.
+        console.warn("Could not load recent registrations:", recentError.message);
+        setRecentRegistrations([]);
+      } else {
+        setRecentRegistrations((recent ?? []) as RecentRegistration[]);
+      }
     } catch (error: unknown) {
       const err = error as DashboardError;
 
@@ -330,6 +383,91 @@ export default function AdminHomeScreen() {
           <Ionicons name="chevron-forward" size={21} color="#7A8B80" />
         </Pressable>
 
+        {/* Recent registrations */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Recent Registrations</Text>
+          <Text style={styles.sectionCaption}>Latest accounts</Text>
+        </View>
+
+        {recentRegistrations.length === 0 ? (
+          <View style={styles.recentEmpty}>
+            <Ionicons name="person-add-outline" size={22} color="#16794A" />
+
+            <Text style={styles.recentEmptyText}>
+              No registrations yet. New student and teacher accounts will appear
+              here.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.recentList}>
+            {recentRegistrations.map((entry) => {
+              const status = (
+                entry.approval_status ?? "pending"
+              ) as ApprovalStatus;
+              const displayRole =
+                entry.requested_role ?? entry.role ?? "student";
+
+              return (
+                <View key={entry.id} style={styles.recentRow}>
+                  <View style={styles.recentAvatar}>
+                    <Text style={styles.recentAvatarText}>
+                      {(entry.full_name?.trim().charAt(0) || "U").toUpperCase()}
+                    </Text>
+                  </View>
+
+                  <View style={styles.recentInfo}>
+                    <Text style={styles.recentName} numberOfLines={1}>
+                      {entry.full_name || "Unnamed user"}
+                    </Text>
+
+                    <Text style={styles.recentMeta} numberOfLines={1}>
+                      {capitalize(displayRole)}
+                      {" · "}
+                      {formatRegistrationDate(entry.created_at)}
+                    </Text>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.recentStatusPill,
+                      status === "approved"
+                        ? styles.recentPillApproved
+                        : status === "rejected"
+                          ? styles.recentPillRejected
+                          : styles.recentPillPending,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.recentStatusText,
+                        status === "approved"
+                          ? styles.recentTextApproved
+                          : status === "rejected"
+                            ? styles.recentTextRejected
+                            : styles.recentTextPending,
+                      ]}
+                    >
+                      {capitalize(status)}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.recentViewAll,
+                pressed && styles.pressedButton,
+              ]}
+              onPress={() => openPage("/admin/users")}
+              accessibilityRole="button"
+            >
+              <Text style={styles.recentViewAllText}>View all users</Text>
+              <Ionicons name="arrow-forward" size={15} color="#16794A" />
+            </Pressable>
+          </View>
+        )}
+
         {/* Quick management */}
         <Text style={styles.sectionTitle}>Quick Management</Text>
 
@@ -344,7 +482,7 @@ export default function AdminHomeScreen() {
           <ActionCard
             icon="book-outline"
             title="Learning Materials"
-            description="Manage educational resources uploaded by teachers."
+            description="Oversee educational resources created by teachers (read-only)."
             onPress={() => openPage("/admin/materials")}
           />
 
@@ -378,7 +516,8 @@ export default function AdminHomeScreen() {
 
             <Text style={styles.resourceDescription}>
               Keep educational resources organized and accessible to authorized
-              users. Open the materials section to manage your resources.
+              users. Open the materials section to review every teacher&apos;s
+              resources.
             </Text>
 
             <Pressable
@@ -389,7 +528,7 @@ export default function AdminHomeScreen() {
               onPress={() => openPage("/admin/materials")}
               accessibilityRole="button"
             >
-              <Text style={styles.resourceButtonText}>Manage Materials</Text>
+              <Text style={styles.resourceButtonText}>Review Materials</Text>
               <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
             </Pressable>
           </View>
@@ -704,6 +843,92 @@ const styles = StyleSheet.create({
   actionList: {
     gap: 11,
     marginBottom: 23,
+  },
+  recentEmpty: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E0ECE3",
+    borderRadius: 17,
+    padding: 16,
+    marginBottom: 23,
+  },
+  recentEmptyText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#718078",
+  },
+  recentList: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E0ECE3",
+    borderRadius: 17,
+    padding: 6,
+    marginBottom: 23,
+  },
+  recentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+  },
+  recentAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    backgroundColor: "#E5F4E9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  recentAvatarText: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#16794A",
+  },
+  recentInfo: { flex: 1, minWidth: 0 },
+  recentName: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#203C2B",
+  },
+  recentMeta: {
+    marginTop: 3,
+    fontSize: 11,
+    color: "#718078",
+  },
+  recentStatusPill: {
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  recentPillApproved: { backgroundColor: "#E5F4E9" },
+  recentPillPending: { backgroundColor: "#FFF0CF" },
+  recentPillRejected: { backgroundColor: "#FBE3E3" },
+  recentStatusText: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+  recentTextApproved: { color: "#16794A" },
+  recentTextPending: { color: "#B7791F" },
+  recentTextRejected: { color: "#B33A3A" },
+  recentViewAll: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 11,
+    borderTopWidth: 1,
+    borderTopColor: "#EEF3EF",
+  },
+  recentViewAllText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#16794A",
   },
   actionCard: {
     flexDirection: "row",

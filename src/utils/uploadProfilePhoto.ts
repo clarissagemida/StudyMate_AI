@@ -26,6 +26,7 @@ export async function uploadProfilePhoto() {
     allowsEditing: true,
     aspect: [1, 1],
     quality: 0.8,
+    base64: true,
   });
 
   if (result.canceled || !result.assets?.[0]) {
@@ -34,10 +35,18 @@ export async function uploadProfilePhoto() {
 
   const asset = result.assets[0];
 
-  // Read the selected image as Base64.
-  const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-    encoding: "base64",
-  });
+  // Prefer the Base64 string from the picker: expo-file-system's web build
+  // does not implement readAsStringAsync, so reading the URI directly would
+  // throw "cannot be accessed on web".
+  const base64 =
+    asset.base64 ??
+    (await FileSystem.readAsStringAsync(asset.uri, {
+      encoding: "base64",
+    }));
+
+  if (!base64) {
+    throw new Error("The selected photo could not be read. Please try again.");
+  }
 
   const extension = asset.mimeType === "image/png" ? "png" : "jpg";
   const contentType = extension === "png" ? "image/png" : "image/jpeg";

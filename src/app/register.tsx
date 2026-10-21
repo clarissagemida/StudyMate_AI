@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
+import { decode } from "base64-arraybuffer";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useState } from "react";
@@ -33,6 +34,7 @@ export default function RegisterScreen() {
 
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [avatarMimeType, setAvatarMimeType] = useState<string | null>(null);
+  const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -90,6 +92,7 @@ export default function RegisterScreen() {
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
+        base64: true,
       });
 
       if (result.canceled || !result.assets[0]) return;
@@ -104,8 +107,17 @@ export default function RegisterScreen() {
         return;
       }
 
+      if (!photo.base64) {
+        Alert.alert(
+          "Photo Error",
+          "Expo could not read the selected photo. Please select another image.",
+        );
+        return;
+      }
+
       setAvatarUri(photo.uri);
       setAvatarMimeType(photo.mimeType ?? "image/jpeg");
+      setAvatarBase64(photo.base64);
     } catch (error) {
       console.error("Photo selection failed:", error);
       Alert.alert(
@@ -118,6 +130,7 @@ export default function RegisterScreen() {
   const removeProfilePhoto = () => {
     setAvatarUri(null);
     setAvatarMimeType(null);
+    setAvatarBase64(null);
   };
 
   const handleRegister = async () => {
@@ -288,7 +301,7 @@ export default function RegisterScreen() {
       let photoUploaded = false;
 
       // Upload a photo only when a session is available.
-      if (data.session && data.user && avatarUri) {
+      if (data.session && data.user && avatarBase64) {
         const extension =
           avatarMimeType === "image/png"
             ? "png"
@@ -301,13 +314,14 @@ export default function RegisterScreen() {
         const photoPath = `${data.user.id}/profile-${Date.now()}.${extension}`;
 
         try {
-          const response = await fetch(avatarUri);
+          // Decode the Base64 captured by the picker instead of fetch(uri):
+          // local file/content URIs are not reliably readable on all platforms.
+          const fileBuffer = decode(avatarBase64);
 
-          if (!response.ok) {
-            throw new Error("Could not read the selected photo.");
+          if (fileBuffer.byteLength === 0) {
+            throw new Error("The selected photo is empty.");
           }
 
-          const fileBuffer = await response.arrayBuffer();
           const contentType = avatarMimeType ?? "image/jpeg";
 
           const { error: uploadError } = await supabase.storage
@@ -354,15 +368,22 @@ export default function RegisterScreen() {
         }
       }
 
+      // No session means Supabase sent a signup confirmation code. Send the
+      // user to the custom verification screen instead of a generic notice.
+      if (emailConfirmationRequired) {
+        router.replace({
+          pathname: "/verify-email",
+          params: { email: cleanEmail },
+        });
+        return;
+      }
+
       let resultMessage: string;
 
-      if (emailConfirmationRequired) {
-        resultMessage =
-          "Your registration request was received. If email confirmation is enabled, check your inbox for instructions. If you do not receive an email, check your Supabase Auth settings. You can upload your profile photo after signing in.";
-      } else if (avatarUri && photoUploaded) {
+      if (avatarBase64 && photoUploaded) {
         resultMessage =
           "Your account was created and your profile photo was saved. You can now sign in, subject to any required administrator approval.";
-      } else if (avatarUri && !photoUploaded) {
+      } else if (avatarBase64 && !photoUploaded) {
         resultMessage =
           "Your account was created, but your profile photo could not be saved. You can try uploading it again after signing in.";
       } else {

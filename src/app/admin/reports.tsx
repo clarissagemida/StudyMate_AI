@@ -31,22 +31,20 @@ export default function AdminReportsScreen() {
         const results = await Promise.all([
           supabase
             .from("profiles")
-            .select("*", { count: "exact", head: true })
-            .or("role.neq.admin,role.is.null")
-            .or("requested_role.neq.admin,requested_role.is.null"),
+            .select("id", { count: "exact", head: true })
+            .or("role.neq.admin,role.is.null"),
           supabase
             .from("profiles")
-            .select("*", { count: "exact", head: true })
+            .select("id", { count: "exact", head: true })
             .eq("approval_status", "pending")
-            .or("role.neq.admin,role.is.null")
-            .or("requested_role.neq.admin,requested_role.is.null"),
+            .or("role.neq.admin,role.is.null"),
           supabase
             .from("profiles")
-            .select("*", { count: "exact", head: true })
+            .select("id", { count: "exact", head: true })
             .eq("role", "student"),
           supabase
             .from("profiles")
-            .select("*", { count: "exact", head: true })
+            .select("id", { count: "exact", head: true })
             .eq("role", "teacher"),
         ]);
 

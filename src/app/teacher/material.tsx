@@ -1,5 +1,10 @@
 import { supabase } from "@/lib/supabase";
 import { confirmAction, showNotice } from "@/utils/notify";
+import { Card } from "@/components/ui/card";
+import { Chip } from "@/components/ui/chip";
+import { ScreenTitle } from "@/components/ui/section-header";
+import { StateView } from "@/components/ui/state-view";
+import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -19,9 +24,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const GREEN = "#176B45";
-const DARK_GREEN = "#104D33";
-const BG = "#F4F8F5";
+const GREEN = colors.primary;
+const DARK_GREEN = colors.primaryDark;
+const BG = colors.background;
 
 type MaterialStatus = "draft" | "published";
 
@@ -126,6 +131,7 @@ export default function TeacherMaterialsScreen() {
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingStatus, setEditingStatus] = useState<MaterialStatus>("draft");
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -210,6 +216,7 @@ export default function TeacherMaterialsScreen() {
 
   const openCreate = () => {
     setEditingId(null);
+    setEditingStatus("draft");
     setForm(EMPTY_FORM);
     setFormErrors({});
     setModalVisible(true);
@@ -217,6 +224,7 @@ export default function TeacherMaterialsScreen() {
 
   const openEdit = (item: Material) => {
     setEditingId(item.id);
+    setEditingStatus(item.status);
     setForm({
       title: item.title,
       subject: item.subject,
@@ -254,23 +262,41 @@ export default function TeacherMaterialsScreen() {
         return;
       }
 
+      // "Save & Publish" always publishes. The secondary button must never
+      // silently unpublish an already-published material, so when editing we
+      // keep the row's existing status unless the user chose to publish.
+      const nextStatus: MaterialStatus =
+        status === "published"
+          ? "published"
+          : editingId
+            ? editingStatus
+            : "draft";
+
       const payload = {
         title: form.title.trim(),
         subject: form.subject.trim(),
         topic: form.topic.trim(),
         description: form.description.trim(),
-        status,
+        status: nextStatus,
         updated_at: new Date().toISOString(),
       };
 
       if (editingId) {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from("materials")
           .update(payload)
           .eq("id", editingId)
-          .eq("teacher_id", user.id);
+          .eq("teacher_id", user.id)
+          .select("id");
 
         if (error) throw new Error(error.message);
+        if (!data || data.length === 0) {
+          throw new Error(
+            "This material could not be updated. It may have been deleted.",
+          );
+        }
+
+        setEditingStatus(nextStatus);
       } else {
         const { error } = await supabase.from("materials").insert({
           ...payload,
@@ -303,15 +329,27 @@ export default function TeacherMaterialsScreen() {
     setActionId(item.id);
 
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("materials")
         .update({
           status: nextStatus,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", item.id);
+        .eq("id", item.id)
+        .select("id");
 
       if (error) throw new Error(error.message);
+
+      // RLS-filtered writes return zero rows without an error; treat that as
+      // a failure so the list never diverges from the database.
+      if (!data || data.length === 0) {
+        showNotice(
+          "Update Failed",
+          "This material no longer exists. Pull to refresh.",
+        );
+        void loadMaterials("refresh");
+        return;
+      }
 
       setItems((current) =>
         (current ?? []).map((row) =>
@@ -336,12 +374,22 @@ export default function TeacherMaterialsScreen() {
         setActionId(item.id);
 
         try {
-          const { error } = await supabase
+          const { data, error } = await supabase
             .from("materials")
             .delete()
-            .eq("id", item.id);
+            .eq("id", item.id)
+            .select("id");
 
           if (error) throw new Error(error.message);
+
+          if (!data || data.length === 0) {
+            showNotice(
+              "Delete Failed",
+              "This material no longer exists. Pull to refresh.",
+            );
+            void loadMaterials("refresh");
+            return;
+          }
 
           setItems((current) =>
             (current ?? []).filter((row) => row.id !== item.id),
@@ -366,60 +414,46 @@ export default function TeacherMaterialsScreen() {
   };
 
   if (loading && items === null) {
-    return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <ActivityIndicator size="large" color={GREEN} />
-        <Text style={styles.centerText}>Loading your materials...</Text>
-      </SafeAreaView>
-    );
+    return <StateView variant="loading" title="Loading your materials..." />;
   }
 
   if (loadError && items === null) {
     return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <View style={[styles.bigIcon, styles.errorIcon]}>
-          <Ionicons name="cloud-offline-outline" size={28} color="#FFFFFF" />
-        </View>
-
-        <Text style={styles.centerTitle}>Unable to load materials</Text>
-        <Text style={styles.centerText}>{loadError}</Text>
-
-        <Pressable
-          onPress={handleRetry}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
-        >
-          <Ionicons name="refresh" size={18} color="#FFFFFF" />
-          <Text style={styles.retryButtonText}>Try Again</Text>
-        </Pressable>
-      </SafeAreaView>
+      <StateView
+        variant="error"
+        title="Unable to load materials"
+        message={loadError}
+        onRetry={handleRetry}
+      />
     );
   }
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
       {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerText}>
-          <Text style={styles.headerTitle}>Learning Materials</Text>
-          <Text style={styles.headerSubtitle}>
-            {items && items.length > 0
-              ? `${items.length} material${items.length === 1 ? "" : "s"} in your library`
-              : "Draft, publish, and organize your content"}
-          </Text>
-        </View>
-
-        {!tableMissing && (
-          <Pressable
-            onPress={openCreate}
-            accessibilityRole="button"
-            accessibilityLabel="Create learning material"
-            style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
-          >
-            <Ionicons name="add" size={26} color="#FFFFFF" />
-          </Pressable>
-        )}
-      </View>
+      <ScreenTitle
+        title="Learning Materials"
+        subtitle={
+          items && items.length > 0
+            ? `${items.length} material${items.length === 1 ? "" : "s"} in your library`
+            : "Draft, publish, and organize your content"
+        }
+        right={
+          !tableMissing ? (
+            <Pressable
+              onPress={openCreate}
+              accessibilityRole="button"
+              accessibilityLabel="Create learning material"
+              style={({ pressed }) => [
+                styles.addButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Ionicons name="add" size={26} color="#FFFFFF" />
+            </Pressable>
+          ) : undefined
+        }
+      />
 
       <FlatList
         data={visibleItems}
@@ -514,7 +548,7 @@ export default function TeacherMaterialsScreen() {
           </View>
         }
         ListEmptyComponent={
-          <View style={styles.emptyBox}>
+          <Card style={styles.emptyBox}>
             <View style={styles.bigIcon}>
               <Ionicons name="document-text-outline" size={26} color={GREEN} />
             </View>
@@ -534,13 +568,13 @@ export default function TeacherMaterialsScreen() {
                   ? "Try a different search term or filter."
                   : "Tap the + button to create your first learning material."}
             </Text>
-          </View>
+          </Card>
         }
         renderItem={({ item }) => {
           const busy = actionId === item.id;
 
           return (
-            <View style={styles.card}>
+            <Card style={styles.card}>
               <View style={styles.cardTop}>
                 <View style={styles.cardText}>
                   <Text style={styles.cardTitle} numberOfLines={2}>
@@ -552,25 +586,10 @@ export default function TeacherMaterialsScreen() {
                   </Text>
                 </View>
 
-                <View
-                  style={[
-                    styles.statusChip,
-                    item.status === "published"
-                      ? styles.statusPublished
-                      : styles.statusDraft,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.statusText,
-                      item.status === "published"
-                        ? styles.statusTextPublished
-                        : styles.statusTextDraft,
-                    ]}
-                  >
-                    {item.status === "published" ? "Published" : "Draft"}
-                  </Text>
-                </View>
+                <Chip
+                  label={item.status === "published" ? "Published" : "Draft"}
+                  tone={item.status === "published" ? "success" : "warning"}
+                />
               </View>
 
               {item.description ? (
@@ -646,7 +665,7 @@ export default function TeacherMaterialsScreen() {
                   </>
                 )}
               </View>
-            </View>
+            </Card>
           );
         }}
       />
@@ -793,149 +812,104 @@ export default function TeacherMaterialsScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
-  center: {
-    flex: 1,
-    backgroundColor: BG,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 32,
-    gap: 12,
-  },
-  centerTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#20392B",
-    textAlign: "center",
-  },
-  centerText: {
-    fontSize: 13,
-    color: "#65776B",
-    textAlign: "center",
-    lineHeight: 19,
-  },
   bigIcon: {
     width: 58,
     height: 58,
-    borderRadius: 18,
-    backgroundColor: "#E8F3EB",
+    borderRadius: radius.lg,
+    backgroundColor: colors.primarySoft,
     alignItems: "center",
     justifyContent: "center",
   },
-  errorIcon: { backgroundColor: "#B33A3A" },
-  retryButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: GREEN,
-    borderRadius: 12,
-    paddingHorizontal: 22,
-    minHeight: 48,
-    justifyContent: "center",
-    marginTop: 6,
-  },
-  retryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
-  pressed: { opacity: 0.8 },
+  pressed: { opacity: 0.9 },
   disabled: { opacity: 0.6 },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
-    gap: 12,
-  },
-  headerText: { flex: 1 },
-  headerTitle: { fontSize: 21, fontWeight: "800", color: DARK_GREEN },
-  headerSubtitle: { fontSize: 12, color: "#758479", marginTop: 3 },
   addButton: {
     width: 46,
     height: 46,
-    borderRadius: 15,
+    borderRadius: radius.lg,
     backgroundColor: GREEN,
     alignItems: "center",
     justifyContent: "center",
     elevation: 3,
   },
-  listContent: { paddingHorizontal: 20, paddingBottom: 40, gap: 12 },
+  listContent: {
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.xxxl + 8,
+    gap: spacing.md,
+  },
   notice: {
     flexDirection: "row",
-    gap: 10,
-    backgroundColor: "#E8F3EB",
-    borderRadius: 15,
-    padding: 14,
+    gap: spacing.sm + 2,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     alignItems: "flex-start",
-    marginBottom: 2,
+    marginBottom: spacing.xs,
   },
   noticeText: { flex: 1, fontSize: 12, lineHeight: 18, color: "#3F5A49" },
   noticeStrong: { fontWeight: "800", color: DARK_GREEN },
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
-    backgroundColor: "#FFFFFF",
+    gap: spacing.sm + 1,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#E1E8E2",
-    borderRadius: 12,
-    paddingHorizontal: 13,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md + 1,
     minHeight: 48,
   },
-  searchInput: { flex: 1, minWidth: 0, fontSize: 14, color: "#203C2D" },
-  filterRow: { flexDirection: "row", gap: 8, marginTop: 2 },
+  searchInput: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 14,
+    color: colors.textPrimary,
+  },
+  filterRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
   filterChip: {
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#FFFFFF",
+    paddingHorizontal: spacing.lg - 1,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#E1E8E2",
+    borderColor: colors.border,
   },
   filterChipActive: { backgroundColor: GREEN, borderColor: GREEN },
   filterChipText: { fontSize: 12, fontWeight: "700", color: "#5A6B61" },
   filterChipTextActive: { color: "#FFFFFF" },
   emptyBox: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E5EDE7",
-    padding: 28,
+    padding: spacing.xxxl - 4,
     alignItems: "center",
-    gap: 8,
+    gap: spacing.sm,
   },
-  emptyTitle: { fontSize: 15, fontWeight: "800", color: "#20392B" },
+  emptyTitle: { fontSize: 15, fontWeight: "800", color: colors.textPrimary },
   emptyText: {
     fontSize: 12,
-    color: "#758479",
+    color: colors.textMuted,
     textAlign: "center",
     lineHeight: 17,
   },
   card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E5EDE7",
-    padding: 16,
-    gap: 8,
+    padding: spacing.lg,
+    gap: spacing.sm,
   },
-  cardTop: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  cardTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm + 2,
+  },
   cardText: { flex: 1 },
-  cardTitle: { fontSize: 15, fontWeight: "800", color: "#20392B" },
-  cardMeta: { fontSize: 12, color: "#65776B", marginTop: 4 },
-  statusChip: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5 },
-  statusPublished: { backgroundColor: "#E4F6E9" },
-  statusDraft: { backgroundColor: "#FFF5D9" },
-  statusText: { fontSize: 10, fontWeight: "800" },
-  statusTextPublished: { color: "#16834A" },
-  statusTextDraft: { color: "#B7791F" },
+  cardTitle: { fontSize: 15, fontWeight: "800", color: colors.textPrimary },
+  cardMeta: { fontSize: 12, color: colors.textMuted, marginTop: spacing.xs },
   cardDescription: {
     fontSize: 12,
     lineHeight: 18,
-    color: "#758479",
+    color: colors.textMuted,
   },
-  cardDate: { fontSize: 11, color: "#93A19A" },
+  cardDate: { fontSize: 11, color: colors.textFaint },
   cardActions: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 4,
+    gap: spacing.sm,
+    marginTop: spacing.xs,
     flexWrap: "wrap",
   },
   actionButton: {
@@ -943,66 +917,66 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
     borderWidth: 1,
-    borderColor: "#D8E4DB",
-    borderRadius: 11,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#F7FBF8",
+    borderColor: colors.borderStrong,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surfaceAlt,
   },
   actionButtonText: { fontSize: 12, fontWeight: "700", color: GREEN },
-  deleteButton: { backgroundColor: "#FDF2F2", borderColor: "#F3D4D4" },
-  deleteText: { color: "#C53030" },
+  deleteButton: { backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder },
+  deleteText: { color: colors.danger },
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(11, 36, 23, 0.45)",
     justifyContent: "flex-end",
   },
   modalSheet: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xxl,
+    borderTopRightRadius: radius.xxl,
+    padding: spacing.xl,
     maxHeight: "90%",
-    gap: 4,
+    gap: spacing.xs,
   },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8,
+    marginBottom: spacing.sm,
   },
   modalTitle: { fontSize: 19, fontWeight: "800", color: DARK_GREEN },
   label: {
     fontSize: 13,
     fontWeight: "700",
     color: "#354C3C",
-    marginTop: 12,
+    marginTop: spacing.md,
     marginBottom: 7,
   },
   input: {
     minHeight: 48,
     borderWidth: 1,
-    borderColor: "#E1E8E2",
-    backgroundColor: "#FBFCFB",
-    borderRadius: 11,
-    paddingHorizontal: 13,
-    paddingVertical: 12,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.md + 1,
+    paddingVertical: spacing.md,
     fontSize: 14,
-    color: "#203C2D",
+    color: colors.textPrimary,
   },
   textarea: { minHeight: 110 },
-  inputError: { borderColor: "#C53030" },
-  errorText: { fontSize: 11, color: "#C53030", marginTop: 5 },
+  inputError: { borderColor: colors.danger },
+  errorText: { fontSize: 11, color: colors.danger, marginTop: 5 },
   modalActions: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 16,
+    gap: spacing.sm + 2,
+    marginTop: spacing.lg,
     marginBottom: 6,
   },
   secondaryButton: {
     flex: 1,
     minHeight: 50,
-    borderRadius: 12,
+    borderRadius: radius.md,
     borderWidth: 1.5,
     borderColor: GREEN,
     alignItems: "center",
@@ -1013,7 +987,7 @@ const styles = StyleSheet.create({
   primaryButton: {
     flex: 1,
     minHeight: 50,
-    borderRadius: 12,
+    borderRadius: radius.md,
     backgroundColor: GREEN,
     alignItems: "center",
     justifyContent: "center",
