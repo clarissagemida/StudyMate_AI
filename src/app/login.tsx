@@ -1,9 +1,11 @@
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { authenticateWithBiometrics } from "@/utils/biometrics";
-import type { User } from "@supabase/supabase-js";
 import { Ionicons } from "@expo/vector-icons";
+import type { User } from "@supabase/supabase-js";
+import { makeRedirectUri } from "expo-auth-session";
 import { router } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -20,7 +22,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-type LoadingMode = "password" | "biometric" | null;
+type LoadingMode = "password" | "google" | "biometric" | "email-code" | null;
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -30,8 +32,101 @@ export default function LoginScreen() {
 
   const isBusy = loading !== null;
 
+  // Completes the browser-based OAuth session when returning to the app.
+  WebBrowser.maybeCompleteAuthSession();
+
+  const handleGoogleLogin = async () => {
+    if (loading !== null) return;
+    setLoading("google");
+
+    try {
+      // Expo Go uses its Expo redirect URL; a native build uses the
+      // studymateai:// scheme configured in app.json.
+      const redirectTo = makeRedirectUri({ path: "auth/callback" });
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo,
+          skipBrowserRedirect: true,
+          queryParams: { prompt: "select_account" },
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.url)
+        throw new Error("Supabase did not return a Google sign-in URL.");
+
+      const result = await WebBrowser.openAuthSessionAsync(
+        data.url,
+        redirectTo,
+      );
+
+      if (result.type !== "success" || !result.url) {
+        if (result.type === "cancel" || result.type === "dismiss") return;
+        throw new Error("Google sign-in was not completed. Please try again.");
+      }
+
+      const callbackUrl = new URL(result.url);
+      const authError =
+        callbackUrl.searchParams.get("error_description") ??
+        callbackUrl.searchParams.get("error");
+
+      if (authError) throw new Error(authError);
+
+      const code = callbackUrl.searchParams.get("code");
+      if (code) {
+        const { data: sessionData, error: exchangeError } =
+          await supabase.auth.exchangeCodeForSession(code);
+        if (exchangeError) throw exchangeError;
+        if (!sessionData.user)
+          throw new Error("Google sign-in returned no user.");
+        // Google has already verified the provider identity. Continue to
+        // profile/approval checks without requesting the password-login code.
+        await verifyAccountAndNavigate(sessionData.user, {
+          requireEmailCode: false,
+        });
+        return;
+      }
+
+      // Some OAuth responses return tokens in the URL fragment.
+      const fragment = new URLSearchParams(callbackUrl.hash.replace(/^#/, ""));
+      const accessToken = fragment.get("access_token");
+      const refreshToken = fragment.get("refresh_token");
+      if (accessToken && refreshToken) {
+        const { data: sessionData, error: sessionError } =
+          await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+        if (sessionError) throw sessionError;
+        if (!sessionData.user)
+          throw new Error("Google sign-in returned no user.");
+        await verifyAccountAndNavigate(sessionData.user, {
+          requireEmailCode: false,
+        });
+        return;
+      }
+
+      throw new Error(
+        "Could not complete the Google sign-in callback. Check your redirect URL settings.",
+      );
+    } catch (error) {
+      console.error("Google sign-in error:", error);
+      Alert.alert(
+        "Google Sign-In Failed",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    } finally {
+      setLoading(null);
+    }
+  };
+
   // Verify the account before opening any dashboard.
-  const verifyAccountAndNavigate = async (user: User) => {
+  const verifyAccountAndNavigate = async (
+    user: User,
+    options: { requireEmailCode?: boolean } = {},
+  ) => {
     try {
       // Supabase Auth is the sole source of truth for email verification.
       // An unconfirmed account must not reach protected features; send the
@@ -108,8 +203,35 @@ export default function LoginScreen() {
 
         return;
       }
-      // Password or biometric verification succeeded for an approved
-      // account: this is the only place the central app lock is cleared.
+      if (options.requireEmailCode !== false) {
+        // Fresh password login: send the additional email security code.
+        // The Edge Function must validate the authenticated user and send a
+        // short-lived one-time code. Dashboard access is deferred.
+        const { error: codeError } = await supabase.functions.invoke(
+          "send-login-code",
+          { body: {} },
+        );
+
+        if (codeError) {
+          console.error("Could not send login code:", codeError);
+          Alert.alert(
+            "Could Not Send Code",
+            "Your account is approved, but we could not send the security code. Please try again.",
+          );
+          return;
+        }
+
+        const targetEmail = (user.email ?? "").trim().toLowerCase();
+        router.replace({
+          pathname: "/verify-login-code",
+          params: targetEmail ? { email: targetEmail } : {},
+        });
+        return;
+      }
+
+      // Existing-session biometric unlock: still recheck profile approval.
+      // A server-side session-verification check must also be enforced before
+      // protected data is available.
       setAppLocked(false);
 
       switch (profile.role) {
@@ -139,7 +261,10 @@ export default function LoginScreen() {
       try {
         await supabase.auth.signOut();
       } catch (signOutError) {
-        console.error("Sign out after verification error failed:", signOutError);
+        console.error(
+          "Sign out after verification error failed:",
+          signOutError,
+        );
       }
 
       Alert.alert(
@@ -244,7 +369,7 @@ export default function LoginScreen() {
       }
 
       // 4. Recheck the user's role and approval status.
-      await verifyAccountAndNavigate(verifiedUser);
+      await verifyAccountAndNavigate(verifiedUser, { requireEmailCode: false });
     } catch {
       Alert.alert(
         "Biometric Login Error",
@@ -368,6 +493,30 @@ export default function LoginScreen() {
                   <>
                     <Text style={styles.signInText}>Sign In</Text>
                     <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
+                  </>
+                )}
+              </Pressable>
+
+              {/* Google sign-in */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.googleButton,
+                  pressed && !isBusy && styles.pressed,
+                  isBusy && styles.disabled,
+                ]}
+                onPress={handleGoogleLogin}
+                disabled={isBusy}
+                accessibilityRole="button"
+                accessibilityLabel="Continue with Google"
+              >
+                {loading === "google" ? (
+                  <ActivityIndicator color="#176B45" />
+                ) : (
+                  <>
+                    <Ionicons name="logo-google" size={20} color="#4285F4" />
+                    <Text style={styles.googleButtonText}>
+                      Continue with Google
+                    </Text>
                   </>
                 )}
               </Pressable>
@@ -539,6 +688,24 @@ const styles = StyleSheet.create({
   signInText: {
     color: "#FFFFFF",
     fontSize: 15,
+    fontWeight: "700",
+  },
+  googleButton: {
+    minHeight: 51,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "#DCE5DE",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 11,
+    paddingHorizontal: 14,
+  },
+  googleButtonText: {
+    color: "#294638",
+    fontSize: 14,
     fontWeight: "700",
   },
   separator: {

@@ -51,7 +51,7 @@ export default function RegisterScreen() {
     },
   ];
 
-  const passwordScore = passwordChecks.filter((check) => check.valid).length;
+  const passwordScore = passwordChecks.filter((item) => item.valid).length;
 
   const passwordStrength =
     password.length === 0
@@ -133,6 +133,63 @@ export default function RegisterScreen() {
     setAvatarBase64(null);
   };
 
+  /**
+   * Upload the selected profile photo if Supabase returned a session.
+   * If no session is available yet, registration can still continue.
+   */
+  const uploadProfilePhoto = async (userId: string): Promise<boolean> => {
+    if (!avatarBase64) return false;
+
+    try {
+      const extension =
+        avatarMimeType === "image/png"
+          ? "png"
+          : avatarMimeType === "image/webp"
+            ? "webp"
+            : avatarMimeType === "image/heic"
+              ? "heic"
+              : "jpg";
+
+      const photoPath = `${userId}/profile-${Date.now()}.${extension}`;
+      const fileBuffer = decode(avatarBase64);
+
+      if (fileBuffer.byteLength === 0) {
+        throw new Error("The selected photo is empty.");
+      }
+
+      const { error: uploadError } = await supabase.storage
+        .from("profile-photos")
+        .upload(photoPath, fileBuffer, {
+          contentType: avatarMimeType ?? "image/jpeg",
+          upsert: false,
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .update({ avatar_path: photoPath })
+        .eq("id", userId);
+
+      if (profileError) {
+        const { error: cleanupError } = await supabase.storage
+          .from("profile-photos")
+          .remove([photoPath]);
+
+        if (cleanupError) {
+          console.error("Photo cleanup failed:", cleanupError.message);
+        }
+
+        throw profileError;
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Profile photo upload failed:", error);
+      return false;
+    }
+  };
+
   const handleRegister = async () => {
     if (loading) return;
 
@@ -167,7 +224,7 @@ export default function RegisterScreen() {
     if (!passwordChecks.every((check) => check.valid)) {
       Alert.alert(
         "Password Requirements Not Met",
-        "Your password must contain at least 8 characters, one uppercase letter, one lowercase letter, one number, and one special character.",
+        "Use at least 8 characters, one uppercase letter, one lowercase letter, one number, and one special character.",
       );
       return;
     }
@@ -183,6 +240,8 @@ export default function RegisterScreen() {
     setLoading(true);
 
     try {
+      // 1. Create the account in Supabase Auth.
+      // The database trigger should create the matching profiles row.
       const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
         password,
@@ -200,7 +259,6 @@ export default function RegisterScreen() {
         const errorCode =
           (error as { code?: string }).code?.toLowerCase() ?? "";
 
-        // Log diagnostic details in the VS Code terminal.
         console.error("Supabase registration error:", {
           message: error.message,
           code: errorCode || "No error code provided",
@@ -217,7 +275,7 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Email Already Registered",
-            "This email may already have an account. Try logging in or use a different email address.",
+            "This email may already have an account. Try logging in or use another email address.",
             [
               { text: "Cancel", style: "cancel" },
               {
@@ -233,7 +291,7 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Information Already Exists",
-            "Your Student / School ID or another unique field may already be registered. Check your details. If this continues, check the profiles table and database trigger in Supabase.",
+            "Your Student / School ID or another unique field may already be registered. Check your details and your profiles table.",
           );
         } else if (
           message.includes("over_email_send_rate_limit") ||
@@ -241,7 +299,7 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Too Many Attempts",
-            "Supabase has limited registration attempts. Please wait before trying again. Check your Supabase Auth email limits if this keeps happening.",
+            "Supabase has limited registration attempts. Wait before trying again.",
           );
         } else if (
           message.includes("email_address_invalid") ||
@@ -249,10 +307,7 @@ export default function RegisterScreen() {
           message.includes("invalid format") ||
           message.includes("invalid email")
         ) {
-          Alert.alert(
-            "Invalid Email",
-            "Please check your email address and enter a valid one.",
-          );
+          Alert.alert("Invalid Email", "Please check your email address.");
         } else if (
           message.includes("weak_password") ||
           message.includes("password should") ||
@@ -260,7 +315,7 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Password Rejected",
-            "Supabase rejected this password. Use at least 8 characters with uppercase and lowercase letters, a number, and a special character. Your Supabase password policy may require additional rules.",
+            "Supabase rejected the password. Check your project's password policy.",
           );
         } else if (
           message.includes("database error saving new user") ||
@@ -268,7 +323,7 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Database Registration Error",
-            "Supabase Auth could not finish creating your account. Check your database trigger and profiles table in Supabase. The exact error is also logged in your VS Code terminal.",
+            "Supabase could not finish creating your account. Check the profiles table, database trigger, and required columns.",
           );
         } else if (
           message.includes("network request failed") ||
@@ -277,12 +332,12 @@ export default function RegisterScreen() {
         ) {
           Alert.alert(
             "Connection Problem",
-            "Unable to connect to Supabase. Check your internet connection and the project URL in your Supabase configuration.",
+            "Unable to connect to Supabase. Check your internet connection and Supabase configuration.",
           );
         } else {
           Alert.alert(
             "Registration Failed",
-            `${error.message}\n\nError code: ${errorCode || "Not provided"}\n\nIf this mentions a database, profile, permission, or trigger, check your Supabase configuration.`,
+            `${error.message}\n\nError code: ${errorCode || "Not provided"}`,
           );
         }
 
@@ -297,66 +352,29 @@ export default function RegisterScreen() {
         return;
       }
 
-      const emailConfirmationRequired = !data.session;
+      const userId = data.user.id;
       let photoUploaded = false;
 
-      // Upload a photo only when a session is available.
-      if (data.session && data.user && avatarBase64) {
-        const extension =
-          avatarMimeType === "image/png"
-            ? "png"
-            : avatarMimeType === "image/webp"
-              ? "webp"
-              : avatarMimeType === "image/heic"
-                ? "heic"
-                : "jpg";
-
-        const photoPath = `${data.user.id}/profile-${Date.now()}.${extension}`;
-
-        try {
-          // Decode the Base64 captured by the picker instead of fetch(uri):
-          // local file/content URIs are not reliably readable on all platforms.
-          const fileBuffer = decode(avatarBase64);
-
-          if (fileBuffer.byteLength === 0) {
-            throw new Error("The selected photo is empty.");
-          }
-
-          const contentType = avatarMimeType ?? "image/jpeg";
-
-          const { error: uploadError } = await supabase.storage
-            .from("profile-photos")
-            .upload(photoPath, fileBuffer, {
-              contentType,
-              upsert: false,
-            });
-
-          if (uploadError) throw uploadError;
-
-          const { error: profileError } = await supabase
-            .from("profiles")
-            .update({ avatar_path: photoPath })
-            .eq("id", data.user.id);
-
-          if (profileError) {
-            const { error: cleanupError } = await supabase.storage
-              .from("profile-photos")
-              .remove([photoPath]);
-
-            if (cleanupError) {
-              console.error("Photo cleanup failed:", cleanupError.message);
-            }
-
-            throw profileError;
-          }
-
-          photoUploaded = true;
-        } catch (photoError) {
-          console.error("Profile photo upload failed:", photoError);
-        }
+      // 2. Upload the photo if Supabase returned a session.
+      // When there is no session, skip the upload instead of failing signup.
+      if (data.session && avatarBase64) {
+        photoUploaded = await uploadProfilePhoto(userId);
       }
 
-      // End the temporary session and preserve the normal login flow.
+      // 3. Ask the custom Edge Function to send a six-digit code using Resend.
+      // Do not use supabase.auth.resend() for this custom verification flow.
+      const { error: sendCodeError } = await supabase.functions.invoke(
+        "send-verification-code",
+        {
+          body: {
+            userId,
+            email: cleanEmail,
+          },
+        },
+      );
+
+      // 4. Clear any temporary signup session so the user must go through
+      // the normal login flow after verification and approval.
       if (data.session) {
         const { error: signOutError } = await supabase.auth.signOut();
 
@@ -368,33 +386,55 @@ export default function RegisterScreen() {
         }
       }
 
-      // No session means Supabase sent a signup confirmation code. Send the
-      // user to the custom verification screen instead of a generic notice.
-      if (emailConfirmationRequired) {
+      // 5. Navigate to the custom verification screen.
+      // Include userId because the verification Edge Function needs it.
+      const goToVerification = () => {
         router.replace({
           pathname: "/verify-email",
-          params: { email: cleanEmail },
+          params: {
+            email: cleanEmail,
+            userId,
+          },
         });
+      };
+
+      if (sendCodeError) {
+        console.error("Sending verification code failed:", {
+          message: sendCodeError.message,
+          details: sendCodeError,
+        });
+
+        Alert.alert(
+          "Account Created — Email Not Sent",
+          "Your account was created, but StudyMate AI could not send the verification code yet. Continue to the verification screen and try sending the code again.",
+          [
+            {
+              text: "Continue",
+              onPress: goToVerification,
+            },
+          ],
+        );
+
         return;
       }
 
-      let resultMessage: string;
+      let successMessage =
+        `A six-digit verification code has been sent to ${cleanEmail}. ` +
+        "Verify your email before logging in. Administrator approval may also be required.";
 
       if (avatarBase64 && photoUploaded) {
-        resultMessage =
-          "Your account was created and your profile photo was saved. You can now sign in, subject to any required administrator approval.";
+        successMessage += "\n\nYour profile photo was saved.";
       } else if (avatarBase64 && !photoUploaded) {
-        resultMessage =
-          "Your account was created, but your profile photo could not be saved. You can try uploading it again after signing in.";
-      } else {
-        resultMessage =
-          "Your account was created. You can add a profile photo after signing in. Complete any required administrator approval before accessing restricted features.";
+        successMessage +=
+          "\n\nYour photo could not be saved during registration. You can try adding it after signing in.";
+      } else if (avatarBase64 && !data.session) {
+        successMessage += "\n\nYour photo can be added after you sign in.";
       }
 
-      Alert.alert("Registration Submitted", resultMessage, [
+      Alert.alert("Registration Successful", successMessage, [
         {
-          text: "Go to Login",
-          onPress: () => router.replace("/login"),
+          text: "Verify Email",
+          onPress: goToVerification,
         },
       ]);
     } catch (error: unknown) {
@@ -468,6 +508,7 @@ export default function RegisterScreen() {
                       />
                     </View>
                   )}
+
                   <View style={styles.photoEditBadge}>
                     <Ionicons name="camera" size={15} color="#FFFFFF" />
                   </View>
@@ -620,8 +661,9 @@ export default function RegisterScreen() {
                   color="#52765F"
                 />
                 <Text style={styles.noticeText}>
-                  Account access may require administrator approval. Choosing
-                  Teacher does not automatically grant teacher permissions.
+                  Email verification and administrator approval may be required.
+                  Choosing Teacher does not automatically grant teacher
+                  permissions.
                 </Text>
               </View>
 
@@ -792,7 +834,12 @@ export default function RegisterScreen() {
                 accessibilityRole="button"
               >
                 {loading ? (
-                  <ActivityIndicator color="#FFFFFF" />
+                  <>
+                    <ActivityIndicator color="#FFFFFF" />
+                    <Text style={styles.registerButtonText}>
+                      Creating account...
+                    </Text>
+                  </>
                 ) : (
                   <>
                     <Text style={styles.registerButtonText}>
@@ -826,16 +873,12 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
+  flex: { flex: 1 },
   container: {
     flex: 1,
     backgroundColor: "#F4F8F5",
   },
-  scrollContent: {
-    flexGrow: 1,
-  },
+  scrollContent: { flexGrow: 1 },
   content: {
     flexGrow: 1,
     paddingHorizontal: 22,
@@ -1013,12 +1056,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
     paddingVertical: 12,
   },
-  inputValid: {
-    borderColor: "#5A9A70",
-  },
-  inputInvalid: {
-    borderColor: "#D64545",
-  },
+  inputValid: { borderColor: "#5A9A70" },
+  inputInvalid: { borderColor: "#D64545" },
   roleContainer: {
     flexDirection: "row",
     gap: 10,
@@ -1098,9 +1137,7 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: "#E1E8E2",
   },
-  passwordChecklist: {
-    gap: 7,
-  },
+  passwordChecklist: { gap: 7 },
   passwordCheckRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1135,12 +1172,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
   },
-  buttonPressed: {
-    opacity: 0.85,
-  },
-  disabledButton: {
-    opacity: 0.65,
-  },
+  buttonPressed: { opacity: 0.85 },
+  disabledButton: { opacity: 0.65 },
   loginRow: {
     flexDirection: "row",
     justifyContent: "center",

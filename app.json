@@ -46,7 +46,8 @@
           "faceIDPermission": "Allow StudyMate AI to use Face ID for secure login."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
