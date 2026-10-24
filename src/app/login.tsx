@@ -29,6 +29,7 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState<LoadingMode>(null);
+  const [showLoginForm, setShowLoginForm] = useState(false);
 
   const isBusy = loading !== null;
 
@@ -40,16 +41,17 @@ export default function LoginScreen() {
     setLoading("google");
 
     try {
-      // Expo Go uses its Expo redirect URL; a native build uses the
-      // studymateai:// scheme configured in app.json.
-      const redirectTo = makeRedirectUri({ path: "auth/callback" });
-
+      const redirectTo = makeRedirectUri({
+        scheme: "studymateai",
+      });
+      // Alert.alert("Google Redirect URL", redirectTo);
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
           redirectTo,
           skipBrowserRedirect: true,
           queryParams: { prompt: "select_account" },
+          scopes: "email profile",
         },
       });
 
@@ -64,13 +66,19 @@ export default function LoginScreen() {
 
       if (result.type !== "success" || !result.url) {
         if (result.type === "cancel" || result.type === "dismiss") return;
+        if (result.type === "locked") {
+          throw new Error(
+            "The browser session was locked. Please close the browser and try again.",
+          );
+        }
         throw new Error("Google sign-in was not completed. Please try again.");
       }
 
       const callbackUrl = new URL(result.url);
       const authError =
         callbackUrl.searchParams.get("error_description") ??
-        callbackUrl.searchParams.get("error");
+        callbackUrl.searchParams.get("error") ??
+        callbackUrl.searchParams.get("message");
 
       if (authError) throw new Error(authError);
 
@@ -108,6 +116,7 @@ export default function LoginScreen() {
         return;
       }
 
+      console.error("Google callback URL:", result.url);
       throw new Error(
         "Could not complete the Google sign-in callback. Check your redirect URL settings.",
       );
@@ -204,34 +213,10 @@ export default function LoginScreen() {
         return;
       }
       if (options.requireEmailCode !== false) {
-        // Fresh password login: send the additional email security code.
-        // The Edge Function must validate the authenticated user and send a
-        // short-lived one-time code. Dashboard access is deferred.
-        const { error: codeError } = await supabase.functions.invoke(
-          "send-login-code",
-          { body: {} },
-        );
-
-        if (codeError) {
-          console.error("Could not send login code:", codeError);
-          Alert.alert(
-            "Could Not Send Code",
-            "Your account is approved, but we could not send the security code. Please try again.",
-          );
-          return;
-        }
-
-        const targetEmail = (user.email ?? "").trim().toLowerCase();
-        router.replace({
-          pathname: "/verify-login-code",
-          params: targetEmail ? { email: targetEmail } : {},
-        });
-        return;
+        // Password login: proceed to dashboard after checks pass.
       }
 
-      // Existing-session biometric unlock: still recheck profile approval.
-      // A server-side session-verification check must also be enforced before
-      // protected data is available.
+      // Session verified: unlock app and route by role.
       setAppLocked(false);
 
       switch (profile.role) {
@@ -402,183 +387,213 @@ export default function LoginScreen() {
               />
 
               <Text style={styles.appName}>StudyMate AI</Text>
-              <Text style={styles.tagline}>Your personal study companion</Text>
+              {!showLoginForm && (
+                <Text style={styles.tagline}>
+                  Your personal study companion
+                </Text>
+              )}
             </View>
 
-            {/* Login form */}
-            <View style={styles.form}>
-              <Text style={styles.heading}>Welcome back</Text>
-              <Text style={styles.description}>
-                Sign in to continue learning.
-              </Text>
-
-              <Text style={styles.label}>Email address</Text>
-
-              <View style={styles.inputBox}>
-                <Ionicons name="mail-outline" size={19} color="#718077" />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="you@example.com"
-                  placeholderTextColor="#A0AAA3"
-                  value={email}
-                  onChangeText={setEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoComplete="email"
-                  editable={!isBusy}
-                  returnKeyType="next"
-                  accessibilityLabel="Email address"
-                />
-              </View>
-
-              <Text style={styles.label}>Password</Text>
-
-              <View style={styles.inputBox}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={19}
-                  color="#718077"
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your password"
-                  placeholderTextColor="#A0AAA3"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoComplete="current-password"
-                  editable={!isBusy}
-                  returnKeyType="done"
-                  onSubmitEditing={handleLogin}
-                  accessibilityLabel="Password"
-                />
+            {!showLoginForm ? (
+              <View style={styles.initialActions}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.signInButton,
+                    pressed && !isBusy && styles.pressed,
+                    isBusy && styles.disabled,
+                  ]}
+                  onPress={() => setShowLoginForm(true)}
+                  disabled={isBusy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sign in"
+                >
+                  <Text style={styles.signInText}>Sign In</Text>
+                  <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
+                </Pressable>
 
                 <Pressable
-                  onPress={() => setShowPassword((value) => !value)}
+                  style={({ pressed }) => [
+                    styles.googleButton,
+                    pressed && !isBusy && styles.pressed,
+                    isBusy && styles.disabled,
+                  ]}
+                  onPress={handleGoogleLogin}
                   disabled={isBusy}
-                  hitSlop={10}
                   accessibilityRole="button"
-                  accessibilityLabel={
-                    showPassword ? "Hide password" : "Show password"
-                  }
+                  accessibilityLabel="Continue with Google"
                 >
+                  {loading === "google" ? (
+                    <ActivityIndicator color="#176B45" />
+                  ) : (
+                    <>
+                      <Ionicons name="logo-google" size={20} color="#4285F4" />
+                      <Text style={styles.googleButtonText}>
+                        Continue with Google
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.biometricButton,
+                    pressed && !isBusy && styles.pressed,
+                    isBusy && styles.disabled,
+                  ]}
+                  onPress={handleBiometricLogin}
+                  disabled={isBusy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Unlock with biometrics"
+                >
+                  {loading === "biometric" ? (
+                    <ActivityIndicator color="#176B45" />
+                  ) : (
+                    <>
+                      <Ionicons name="finger-print" size={27} color="#176B45" />
+
+                      <View style={styles.biometricButtonText}>
+                        <Text style={styles.biometricTitle}>
+                          Unlock with Biometrics
+                        </Text>
+                        <Text style={styles.biometricSubtitle}>
+                          Securely access your saved session
+                        </Text>
+                      </View>
+
+                      <Ionicons
+                        name="shield-checkmark-outline"
+                        size={21}
+                        color="#176B45"
+                      />
+                    </>
+                  )}
+                </Pressable>
+
+                <View style={styles.registerRow}>
+                  <Text style={styles.registerText}>New to StudyMate? </Text>
+
+                  <Pressable
+                    onPress={() => router.push("/register")}
+                    disabled={isBusy}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.registerLink}>Create account</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              /* Login form */
+              <View style={styles.form}>
+                <Pressable
+                  style={styles.backToInitial}
+                  onPress={() => setShowLoginForm(false)}
+                  disabled={isBusy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back"
+                >
+                  <Ionicons name="arrow-back" size={18} color="#176B45" />
+                  <Text style={styles.backToInitialText}>Back</Text>
+                </Pressable>
+
+                <Text style={styles.heading}>Welcome back</Text>
+                <Text style={styles.description}>
+                  Sign in to continue learning.
+                </Text>
+
+                <Text style={styles.label}>Email address</Text>
+
+                <View style={styles.inputBox}>
+                  <Ionicons name="mail-outline" size={19} color="#718077" />
+
+                  <TextInput
+                    style={styles.input}
+                    placeholder="you@example.com"
+                    placeholderTextColor="#A0AAA3"
+                    value={email}
+                    onChangeText={setEmail}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="email"
+                    editable={!isBusy}
+                    returnKeyType="next"
+                    accessibilityLabel="Email address"
+                  />
+                </View>
+
+                <Text style={styles.label}>Password</Text>
+
+                <View style={styles.inputBox}>
                   <Ionicons
-                    name={showPassword ? "eye-off-outline" : "eye-outline"}
-                    size={20}
+                    name="lock-closed-outline"
+                    size={19}
                     color="#718077"
                   />
-                </Pressable>
-              </View>
 
-              {/* Standard login */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.signInButton,
-                  pressed && !isBusy && styles.pressed,
-                  isBusy && styles.disabled,
-                ]}
-                onPress={handleLogin}
-                disabled={isBusy}
-                accessibilityRole="button"
-                accessibilityLabel="Sign in with email and password"
-              >
-                {loading === "password" ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <>
-                    <Text style={styles.signInText}>Sign In</Text>
-                    <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
-                  </>
-                )}
-              </Pressable>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Enter your password"
+                    placeholderTextColor="#A0AAA3"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="current-password"
+                    editable={!isBusy}
+                    returnKeyType="done"
+                    onSubmitEditing={handleLogin}
+                    accessibilityLabel="Password"
+                  />
 
-              {/* Google sign-in */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.googleButton,
-                  pressed && !isBusy && styles.pressed,
-                  isBusy && styles.disabled,
-                ]}
-                onPress={handleGoogleLogin}
-                disabled={isBusy}
-                accessibilityRole="button"
-                accessibilityLabel="Continue with Google"
-              >
-                {loading === "google" ? (
-                  <ActivityIndicator color="#176B45" />
-                ) : (
-                  <>
-                    <Ionicons name="logo-google" size={20} color="#4285F4" />
-                    <Text style={styles.googleButtonText}>
-                      Continue with Google
-                    </Text>
-                  </>
-                )}
-              </Pressable>
-
-              {/* Separator */}
-              <View style={styles.separator}>
-                <View style={styles.separatorLine} />
-                <Text style={styles.separatorText}>OR</Text>
-                <View style={styles.separatorLine} />
-              </View>
-
-              {/* Biometric unlock */}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.biometricButton,
-                  pressed && !isBusy && styles.pressed,
-                  isBusy && styles.disabled,
-                ]}
-                onPress={handleBiometricLogin}
-                disabled={isBusy}
-                accessibilityRole="button"
-                accessibilityLabel="Unlock with biometrics"
-              >
-                {loading === "biometric" ? (
-                  <ActivityIndicator color="#176B45" />
-                ) : (
-                  <>
-                    <Ionicons name="finger-print" size={27} color="#176B45" />
-
-                    <View style={styles.biometricButtonText}>
-                      <Text style={styles.biometricTitle}>
-                        Unlock with Biometrics
-                      </Text>
-                      <Text style={styles.biometricSubtitle}>
-                        Securely access your saved session
-                      </Text>
-                    </View>
-
+                  <Pressable
+                    onPress={() => setShowPassword((value) => !value)}
+                    disabled={isBusy}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      showPassword ? "Hide password" : "Show password"
+                    }
+                  >
                     <Ionicons
-                      name="shield-checkmark-outline"
-                      size={21}
-                      color="#176B45"
+                      name={showPassword ? "eye-off-outline" : "eye-outline"}
+                      size={20}
+                      color="#718077"
                     />
-                  </>
-                )}
-              </Pressable>
+                  </Pressable>
+                </View>
 
-              {/* Registration */}
-              <View style={styles.registerRow}>
-                <Text style={styles.registerText}>New to StudyMate? </Text>
-
+                {/* Standard login */}
                 <Pressable
-                  onPress={() => router.push("/register")}
+                  style={({ pressed }) => [
+                    styles.signInButton,
+                    pressed && !isBusy && styles.pressed,
+                    isBusy && styles.disabled,
+                  ]}
+                  onPress={handleLogin}
                   disabled={isBusy}
                   accessibilityRole="button"
+                  accessibilityLabel="Sign in with email and password"
                 >
-                  <Text style={styles.registerLink}>Create account</Text>
+                  {loading === "password" ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Text style={styles.signInText}>Sign In</Text>
+                      <Ionicons
+                        name="arrow-forward"
+                        size={18}
+                        color="#FFFFFF"
+                      />
+                    </>
+                  )}
                 </Pressable>
               </View>
-            </View>
+            )}
 
-            <Text style={styles.footer}>LEARN · PRACTICE · IMPROVE</Text>
+            {!showLoginForm && (
+              <Text style={styles.footer}>LEARN · PRACTICE · IMPROVE</Text>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -608,13 +623,13 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   logo: {
-    width: 170,
-    height: 170,
+    width: 220,
+    height: 220,
     marginBottom: 8,
   },
   appName: {
     color: "#176B45",
-    fontSize: 29,
+    fontSize: 32,
     fontWeight: "700",
     letterSpacing: -0.5,
   },
@@ -703,6 +718,10 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     paddingHorizontal: 14,
   },
+  googleIcon: {
+    width: 20,
+    height: 20,
+  },
   googleButtonText: {
     color: "#294638",
     fontSize: 14,
@@ -756,6 +775,24 @@ const styles = StyleSheet.create({
   },
   disabled: {
     opacity: 0.6,
+  },
+  initialActions: {
+    width: "100%",
+    maxWidth: 400,
+    alignSelf: "center",
+    gap: 12,
+  },
+  backToInitial: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 12,
+    alignSelf: "flex-start",
+  },
+  backToInitialText: {
+    color: "#176B45",
+    fontSize: 13,
+    fontWeight: "600",
   },
   registerRow: {
     flexDirection: "row",

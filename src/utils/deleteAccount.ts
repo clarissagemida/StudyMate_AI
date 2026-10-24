@@ -54,10 +54,11 @@ export async function deleteAccount(targetId?: string): Promise<DeleteAccountRes
         message =
           "The delete-account function is not deployed. Deploy it in Supabase → Edge Functions.";
       } else if (status === 401 || status === 403) {
-        message = "Your session is not authorized to delete accounts.";
+        message = serverMessage || "Your session is not authorized to delete accounts.";
       } else if (status === 500) {
         message =
-          "The function is deployed but not configured. Set the STUDYMATE_SERVICE_ROLE_KEY secret in Supabase → Edge Functions → Secrets.";
+          serverMessage ||
+          "The function is deployed but not configured. Set STUDYMATE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_ROLE_KEY in Supabase → Edge Functions → Secrets.";
       } else {
         message = `${error.message}${status ? ` (HTTP ${status})` : ""}`;
       }

@@ -75,14 +75,20 @@ function describeResendError(rawMessage: string): string {
 }
 
 export default function VerifyEmailScreen() {
-  const params = useLocalSearchParams<{ email?: string }>();
+  const params = useLocalSearchParams<{ email?: string; userId?: string }>();
 
   const initialEmail = useMemo(
     () => (typeof params.email === "string" ? params.email.trim().toLowerCase() : ""),
     [params.email],
   );
 
+  const initialUserId = useMemo(
+    () => (typeof params.userId === "string" ? params.userId.trim() : ""),
+    [params.userId],
+  );
+
   const [email] = useState(initialEmail);
+  const [userId] = useState(initialUserId);
   const [code, setCode] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
@@ -138,43 +144,40 @@ export default function VerifyEmailScreen() {
     setStatus({ kind: "idle" });
 
     try {
-      // type: "signup" confirms the EXISTING signup. A passwordless "email"
-      // OTP is not equivalent and must not be used here.
-      const { data, error } = await supabase.auth.verifyOtp({
-        email: cleanEmail,
-        token: code,
-        type: "signup",
-      });
-
-      if (error) {
-        setStatus({ kind: "error", message: describeVerifyError(error.message) });
-        return;
-      }
-
-      if (!data.session || !data.user) {
-        // No session means the code was accepted but no login was created
-        // (e.g. the account still needs admin approval). Send them to login;
-        // the existing login + approval flow takes over from there.
+      if (!userId) {
         setStatus({
-          kind: "success",
-          message: "Email verified. Please sign in to continue.",
+          kind: "error",
+          message: "Missing verification details. Please register again or go back to login.",
         });
-
-        setTimeout(() => {
-          router.replace("/login");
-        }, 1200);
         return;
       }
 
-      // The verification created a session. Drop it so the user still goes
-      // through the normal login and approval checks — verification must never
-      // auto-skip login or unlock a privileged screen.
-      const { error: signOutError } = await supabase.auth.signOut();
+      const { error: verifyError } = await supabase.functions.invoke(
+        "verify-registration-code",
+        {
+          body: {
+            userId,
+            email: cleanEmail,
+            code,
+          },
+        },
+      );
 
-      if (signOutError) {
+      if (verifyError) {
+        setStatus({
+          kind: "error",
+          message: verifyError.message || "Verification failed. Please try again.",
+        });
+        return;
+      }
+
+      // Ensure no session remains after verification.
+      try {
+        await supabase.auth.signOut();
+      } catch (signOutError) {
         console.error(
           "Could not clear post-verification session:",
-          signOutError.message,
+          signOutError,
         );
       }
 
@@ -205,10 +208,10 @@ export default function VerifyEmailScreen() {
 
     const cleanEmail = email.trim().toLowerCase();
 
-    if (!cleanEmail) {
+    if (!cleanEmail || !userId) {
       setStatus({
         kind: "error",
-        message: "Please enter your email address to resend the code.",
+        message: "Missing verification details. Please register again.",
       });
       return;
     }
@@ -217,15 +220,20 @@ export default function VerifyEmailScreen() {
     setStatus({ kind: "idle" });
 
     try {
-      const { error } = await supabase.auth.resend({
-        type: "signup",
-        email: cleanEmail,
-      });
+      const { error } = await supabase.functions.invoke(
+        "send-verification-code",
+        {
+          body: {
+            userId,
+            email: cleanEmail,
+          },
+        },
+      );
 
       if (error) {
         setStatus({
           kind: "error",
-          message: describeResendError(error.message),
+          message: error.message || "We could not resend the code. Please try again.",
         });
         return;
       }
@@ -241,13 +249,13 @@ export default function VerifyEmailScreen() {
         kind: "error",
         message:
           error instanceof Error
-            ? describeResendError(error.message)
+            ? error.message
             : "We could not resend the code. Please try again.",
       });
     } finally {
       setResending(false);
     }
-  }, [cooldown, email, resending]);
+  }, [cooldown, email, resending, userId]);
 
   const resendLabel =
     cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code";

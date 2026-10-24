@@ -1,8 +1,11 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SERVICE_ROLE_KEY = Deno.env.get("STUDYMATE_SERVICE_ROLE_KEY") ?? "";
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const SERVICE_ROLE_KEY =
+  Deno.env.get("STUDYMATE_SERVICE_ROLE_KEY") ??
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
+  "";
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ?? "";
 const PHOTO_BUCKET = "profile-photos";
 
 const corsHeaders = {
@@ -73,7 +76,7 @@ Deno.serve(async (req: Request) => {
 
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
     console.error(
-      "delete-account: missing SUPABASE_URL or STUDYMATE_SERVICE_ROLE_KEY",
+      "delete-account: missing SUPABASE_URL or service role key",
     );
     return json(
       { status: "error", message: "Server is not configured for deletion." },

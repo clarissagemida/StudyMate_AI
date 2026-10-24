@@ -80,6 +80,13 @@ export default function AdminSettingsScreen() {
         return;
       }
 
+      try {
+        const { setAppLocked } = await import("@/utils/appLock");
+        setAppLocked(false);
+      } catch (lockError) {
+        console.error("Failed to clear app lock on logout:", lockError);
+      }
+
       router.replace("/login");
     } catch (error) {
       console.error("Logout error:", error);
