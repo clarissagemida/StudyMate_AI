@@ -52,6 +52,12 @@ const MENU_ITEMS = [
     icon: "bar-chart-outline",
   },
   {
+    route: "/admin/ai",
+    name: "ai",
+    label: "AI Controls",
+    icon: "sparkles-outline",
+  },
+  {
     route: "/admin/settings",
     name: "settings",
     label: "Settings",
@@ -497,6 +503,17 @@ export default function AdminLayout() {
           drawerLabel: "Reports",
           drawerIcon: ({ color, size }) => (
             <Ionicons name="bar-chart-outline" color={color} size={size} />
+          ),
+        }}
+      />
+
+      <Drawer.Screen
+        name="ai"
+        options={{
+          title: "AI Controls",
+          drawerLabel: "AI Controls",
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="sparkles-outline" color={color} size={size} />
           ),
         }}
       />

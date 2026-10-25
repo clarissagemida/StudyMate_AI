@@ -1,5 +1,8 @@
 import { supabase } from "@/lib/supabase";
+import { AI_ENABLED } from "@/utils/aiFlags";
+import { indexMaterial } from "@/utils/materialsIndex";
 import { confirmAction, showNotice } from "@/utils/notify";
+import { generateTeacherAi } from "@/utils/teacherAi";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { ScreenTitle } from "@/components/ui/section-header";
@@ -36,6 +39,7 @@ type Material = {
   subject: string;
   topic: string;
   description: string;
+  content: string;
   status: MaterialStatus;
   created_at: string;
   updated_at: string;
@@ -48,6 +52,7 @@ type FormState = {
   subject: string;
   topic: string;
   description: string;
+  content: string;
 };
 
 const EMPTY_FORM: FormState = {
@@ -55,6 +60,7 @@ const EMPTY_FORM: FormState = {
   subject: "",
   topic: "",
   description: "",
+  content: "",
 };
 
 type FilterValue = "all" | MaterialStatus;
@@ -77,6 +83,16 @@ function isMissingRelation(
     message.includes("could not find the table") ||
     message.includes("does not exist")
   );
+}
+
+function isMissingColumn(
+  error: { code?: string; message?: string } | null,
+): boolean {
+  if (!error) return false;
+  if (error.code === "42703" || error.code === "PGRST204") return true;
+
+  const message = (error.message ?? "").toLowerCase();
+  return message.includes("column") && message.includes("does not exist");
 }
 
 function validateForm(form: FormState): Record<string, string> {
@@ -104,6 +120,10 @@ function validateForm(form: FormState): Record<string, string> {
     errors.description = "Description must be 2000 characters or fewer.";
   }
 
+  if (form.content.trim().length > 20000) {
+    errors.content = "Lesson content must be 20,000 characters or fewer.";
+  }
+
   return errors;
 }
 
@@ -125,6 +145,7 @@ export default function TeacherMaterialsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tableMissing, setTableMissing] = useState(false);
+  const [groundingMissing, setGroundingMissing] = useState(false);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
@@ -135,6 +156,7 @@ export default function TeacherMaterialsScreen() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [drafting, setDrafting] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
 
   const loadMaterials = useCallback(async (mode: LoadMode) => {
@@ -151,13 +173,34 @@ export default function TeacherMaterialsScreen() {
         return;
       }
 
-      const { data, error } = await supabase
+      const primary = await supabase
         .from("materials")
         .select(
-          "id, title, subject, topic, description, status, created_at, updated_at",
+          "id, title, subject, topic, description, content, status, created_at, updated_at",
         )
         .eq("teacher_id", user.id)
         .order("created_at", { ascending: false });
+
+      let data: unknown[] | null = primary.data;
+      let error = primary.error;
+      let missingGrounding = false;
+
+      // ai_grounding.sql adds materials.content. Until it runs, keep the
+      // materials screen usable without the AI content field.
+      if (isMissingColumn(error)) {
+        missingGrounding = true;
+
+        const fallback = await supabase
+          .from("materials")
+          .select(
+            "id, title, subject, topic, description, status, created_at, updated_at",
+          )
+          .eq("teacher_id", user.id)
+          .order("created_at", { ascending: false });
+
+        data = fallback.data as unknown[] | null;
+        error = fallback.error;
+      }
 
       if (isMissingRelation(error)) {
         setTableMissing(true);
@@ -169,7 +212,24 @@ export default function TeacherMaterialsScreen() {
       if (error) throw new Error(error.message);
 
       setTableMissing(false);
-      setItems((data ?? []) as Material[]);
+      setGroundingMissing(missingGrounding);
+
+      const rows = (data ?? []) as unknown as Record<string, unknown>[];
+
+      setItems(
+        rows.map((row) => ({
+          id: String(row.id ?? ""),
+          title: String(row.title ?? ""),
+          subject: String(row.subject ?? ""),
+          topic: typeof row.topic === "string" ? row.topic : "",
+          description:
+            typeof row.description === "string" ? row.description : "",
+          content: typeof row.content === "string" ? row.content : "",
+          status: row.status === "published" ? "published" : "draft",
+          created_at: String(row.created_at ?? ""),
+          updated_at: String(row.updated_at ?? ""),
+        })),
+      );
       setLoadError(null);
     } catch (err) {
       const message =
@@ -230,19 +290,59 @@ export default function TeacherMaterialsScreen() {
       subject: item.subject,
       topic: item.topic ?? "",
       description: item.description ?? "",
+      content: typeof item.content === "string" ? item.content : "",
     });
     setFormErrors({});
     setModalVisible(true);
   };
 
   const closeModal = () => {
-    if (saving) return;
+    if (saving || drafting) return;
     setModalVisible(false);
     setFormErrors({});
   };
 
+  const handleAiDraft = async () => {
+    if (drafting || saving) return;
+
+    const subject = form.subject.trim();
+    const topic = form.topic.trim() || form.title.trim();
+
+    if (!subject || !topic) {
+      setFormErrors((current) => ({
+        ...current,
+        ...(subject ? {} : { subject: "Add a subject before drafting." }),
+        ...(topic ? {} : { topic: "Add a topic or title before drafting." }),
+      }));
+      return;
+    }
+
+    setDrafting(true);
+
+    const result = await generateTeacherAi({
+      mode: "topic",
+      subject,
+      topic,
+      difficulty: "medium",
+    });
+
+    setDrafting(false);
+
+    if (result.status !== "ok") {
+      showNotice("AI Draft Failed", result.message);
+      return;
+    }
+
+    if (result.mode !== "topic") {
+      showNotice("AI Draft Failed", "The AI returned an unexpected draft.");
+      return;
+    }
+
+    setForm((current) => ({ ...current, content: result.content }));
+  };
+
   const handleSave = async (status: MaterialStatus) => {
-    if (saving) return;
+    if (saving || drafting) return;
 
     const errors = validateForm(form);
     setFormErrors(errors);
@@ -279,7 +379,10 @@ export default function TeacherMaterialsScreen() {
         description: form.description.trim(),
         status: nextStatus,
         updated_at: new Date().toISOString(),
+        ...(groundingMissing ? {} : { content: form.content.trim() }),
       };
+
+      let savedId = editingId;
 
       if (editingId) {
         const { data, error } = await supabase
@@ -298,18 +401,35 @@ export default function TeacherMaterialsScreen() {
 
         setEditingStatus(nextStatus);
       } else {
-        const { error } = await supabase.from("materials").insert({
-          ...payload,
-          teacher_id: user.id,
-          created_at: new Date().toISOString(),
-        });
+        const { data, error } = await supabase
+          .from("materials")
+          .insert({
+            ...payload,
+            teacher_id: user.id,
+            created_at: new Date().toISOString(),
+          })
+          .select("id")
+          .maybeSingle();
 
         if (error) throw new Error(error.message);
+
+        savedId = typeof data?.id === "string" ? data.id : null;
       }
 
       setModalVisible(false);
       setFormErrors({});
       await loadMaterials("refresh");
+
+      // Grounding is a background best effort: a failed index must never make
+      // a saved material look unsaved. Indexing an empty material clears stale
+      // chunks so AI Buddy cannot quote content the teacher removed.
+      if (savedId && !groundingMissing) {
+        void indexMaterial(savedId).then((result) => {
+          if (!result.ok) {
+            console.warn("Material indexing skipped:", result.message);
+          }
+        });
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Something went wrong.";
@@ -766,17 +886,79 @@ export default function TeacherMaterialsScreen() {
               {formErrors.description && (
                 <Text style={styles.errorText}>{formErrors.description}</Text>
               )}
+
+              <View style={styles.contentLabelRow}>
+                <Text style={styles.label}>Lesson Content</Text>
+
+                {AI_ENABLED && !groundingMissing ? (
+                  <Pressable
+                    onPress={() => void handleAiDraft()}
+                    disabled={drafting || saving}
+                    accessibilityRole="button"
+                    accessibilityLabel="Draft lesson content with AI"
+                    style={({ pressed }) => [
+                      styles.aiDraftButton,
+                      pressed && styles.pressed,
+                      (drafting || saving) && styles.disabled,
+                    ]}
+                  >
+                    {drafting ? (
+                      <ActivityIndicator size="small" color={GREEN} />
+                    ) : (
+                      <>
+                        <Ionicons name="sparkles-outline" size={13} color={GREEN} />
+                        <Text style={styles.aiDraftText}>Draft with AI</Text>
+                      </>
+                    )}
+                  </Pressable>
+                ) : null}
+              </View>
+
+              {groundingMissing ? (
+                <Text style={styles.hintText}>
+                  Run supabase/ai_grounding.sql to enable lesson content and AI
+                  grounding. Your existing materials keep working.
+                </Text>
+              ) : (
+                <>
+                  <TextInput
+                    value={form.content}
+                    onChangeText={(value) =>
+                      setForm((current) => ({ ...current, content: value }))
+                    }
+                    placeholder="Paste or write the full lesson students will study..."
+                    placeholderTextColor="#9AA69E"
+                    multiline
+                    textAlignVertical="top"
+                    maxLength={20000}
+                    style={[
+                      styles.input,
+                      styles.contentInput,
+                      formErrors.content && styles.inputError,
+                    ]}
+                    accessibilityLabel="Material lesson content"
+                  />
+                  {formErrors.content && (
+                    <Text style={styles.errorText}>{formErrors.content}</Text>
+                  )}
+                  <Text style={styles.hintText}>
+                    Published lesson content is used by AI Buddy to ground
+                    answers in your material. AI drafts are suggestions; review
+                    before publishing.
+                  </Text>
+                </>
+              )}
             </ScrollView>
 
             <View style={styles.modalActions}>
               <Pressable
                 onPress={() => void handleSave("draft")}
-                disabled={saving}
+                disabled={saving || drafting}
                 accessibilityRole="button"
                 style={({ pressed }) => [
                   styles.secondaryButton,
                   pressed && styles.pressed,
-                  saving && styles.disabled,
+                  (saving || drafting) && styles.disabled,
                 ]}
               >
                 {saving ? (
@@ -790,12 +972,12 @@ export default function TeacherMaterialsScreen() {
 
               <Pressable
                 onPress={() => void handleSave("published")}
-                disabled={saving}
+                disabled={saving || drafting}
                 accessibilityRole="button"
                 style={({ pressed }) => [
                   styles.primaryButton,
                   pressed && styles.pressed,
-                  saving && styles.disabled,
+                  (saving || drafting) && styles.disabled,
                 ]}
               >
                 <Text style={styles.primaryButtonText}>
@@ -965,6 +1147,32 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
   },
   textarea: { minHeight: 110 },
+  contentLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  aiDraftButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1,
+    borderColor: "#CDE3D4",
+  },
+  aiDraftText: { fontSize: 11, fontWeight: "800", color: GREEN },
+  contentInput: { minHeight: 160 },
+  hintText: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: colors.textMuted,
+    marginTop: 6,
+  },
   inputError: { borderColor: colors.danger },
   errorText: { fontSize: 11, color: colors.danger, marginTop: 5 },
   modalActions: {

@@ -56,6 +56,40 @@ function describeVerifyError(rawMessage: string): string {
   return rawMessage || "Verification failed. Please try again.";
 }
 
+// supabase.functions.invoke surfaces non-2xx responses as a generic
+// FunctionsHttpError whose useful message lives in the response body.
+async function readFunctionError(
+  error: unknown,
+  fallback: string,
+): Promise<string> {
+  const context = (error as { context?: Response } | null)?.context;
+
+  if (context && typeof context.json === "function") {
+    try {
+      const body = (await context.json()) as {
+        error?: unknown;
+        message?: unknown;
+      };
+      const message =
+        typeof body?.error === "string"
+          ? body.error
+          : typeof body?.message === "string"
+            ? body.message
+            : "";
+
+      if (message.trim()) return message.trim();
+    } catch {
+      // Response body was not JSON; fall through to the generic message.
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return fallback;
+}
+
 function describeResendError(rawMessage: string): string {
   const message = rawMessage.toLowerCase();
 
@@ -100,6 +134,13 @@ export default function VerifyEmailScreen() {
   );
 
   const inputRef = useRef<TextInput>(null);
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimer.current) clearTimeout(redirectTimer.current);
+    };
+  }, []);
 
   // Countdown ticker for the resend cooldown.
   useEffect(() => {
@@ -164,10 +205,11 @@ export default function VerifyEmailScreen() {
       );
 
       if (verifyError) {
-        setStatus({
-          kind: "error",
-          message: verifyError.message || "Verification failed. Please try again.",
-        });
+        const message = await readFunctionError(
+          verifyError,
+          "Verification failed. Please try again.",
+        );
+        setStatus({ kind: "error", message: describeVerifyError(message) });
         return;
       }
 
@@ -186,22 +228,21 @@ export default function VerifyEmailScreen() {
         message: "Email verified successfully. Please sign in to continue.",
       });
 
-      setTimeout(() => {
+      redirectTimer.current = setTimeout(() => {
         router.replace("/login");
       }, 1200);
     } catch (error) {
       console.error("Email verification failed:", error);
       setStatus({
         kind: "error",
-        message:
-          error instanceof Error
-            ? describeVerifyError(error.message)
-            : "Verification failed. Please try again.",
+        message: describeVerifyError(
+          await readFunctionError(error, "Verification failed. Please try again."),
+        ),
       });
     } finally {
       setVerifying(false);
     }
-  }, [code, email, verifying]);
+  }, [code, email, userId, verifying]);
 
   const handleResend = useCallback(async () => {
     if (resending || cooldown > 0) return;
@@ -231,10 +272,11 @@ export default function VerifyEmailScreen() {
       );
 
       if (error) {
-        setStatus({
-          kind: "error",
-          message: error.message || "We could not resend the code. Please try again.",
-        });
+        const message = await readFunctionError(
+          error,
+          "We could not resend the code. Please try again.",
+        );
+        setStatus({ kind: "error", message: describeResendError(message) });
         return;
       }
 
@@ -247,10 +289,12 @@ export default function VerifyEmailScreen() {
       console.error("Resend code failed:", error);
       setStatus({
         kind: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "We could not resend the code. Please try again.",
+        message: describeResendError(
+          await readFunctionError(
+            error,
+            "We could not resend the code. Please try again.",
+          ),
+        ),
       });
     } finally {
       setResending(false);

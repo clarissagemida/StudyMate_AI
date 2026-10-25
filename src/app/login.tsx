@@ -4,6 +4,7 @@ import { authenticateWithBiometrics } from "@/utils/biometrics";
 import { Ionicons } from "@expo/vector-icons";
 import type { User } from "@supabase/supabase-js";
 import { makeRedirectUri } from "expo-auth-session";
+import { Image as ExpoImage } from "expo-image";
 import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
@@ -155,7 +156,10 @@ export default function LoginScreen() {
               onPress: () => {
                 router.replace({
                   pathname: "/verify-email",
-                  params: targetEmail ? { email: targetEmail } : {},
+                  params: {
+                    ...(targetEmail ? { email: targetEmail } : {}),
+                    userId: user.id,
+                  },
                 });
               },
             },
@@ -426,7 +430,12 @@ export default function LoginScreen() {
                     <ActivityIndicator color="#176B45" />
                   ) : (
                     <>
-                      <Ionicons name="logo-google" size={20} color="#4285F4" />
+                      <ExpoImage
+                        source={require("../../assets/images/google.webp")}
+                        style={styles.googleIcon}
+                        contentFit="contain"
+                        accessibilityLabel="Google"
+                      />
                       <Text style={styles.googleButtonText}>
                         Continue with Google
                       </Text>

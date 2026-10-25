@@ -1,5 +1,7 @@
 import { supabase } from "@/lib/supabase";
+import { AI_ENABLED } from "@/utils/aiFlags";
 import { confirmAction, showNotice } from "@/utils/notify";
+import { generateTeacherAi } from "@/utils/teacherAi";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { ScreenTitle } from "@/components/ui/section-header";
@@ -7,7 +9,7 @@ import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -50,6 +52,14 @@ type QuestionDraft = {
   options: string[];
   correctIndex: number;
   explanation: string;
+  aiGenerated?: boolean;
+};
+
+type MaterialOption = {
+  id: string;
+  title: string;
+  subject: string;
+  topic: string;
 };
 
 type QuizForm = {
@@ -154,6 +164,17 @@ export default function TeacherQuizzesScreen() {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
+  // Editing must not be writable until the existing question set has loaded,
+  // otherwise an early Save would replace the quiz with an empty question list.
+  const [questionsReady, setQuestionsReady] = useState(true);
+  const [existingQuestionIds, setExistingQuestionIds] = useState<string[]>([]);
+  const questionLoadRef = useRef(0);
+
+  const [materials, setMaterials] = useState<MaterialOption[]>([]);
+  const [aiMaterialId, setAiMaterialId] = useState("");
+  const [aiCount, setAiCount] = useState(5);
+  const [generating, setGenerating] = useState(false);
+  const [regeneratingKey, setRegeneratingKey] = useState<string | null>(null);
 
   const loadQuizzes = useCallback(async (mode: LoadMode) => {
     if (mode === "refresh") setRefreshing(true);
@@ -243,6 +264,32 @@ export default function TeacherQuizzesScreen() {
     void run();
   }, [loadQuizzes]);
 
+  useEffect(() => {
+    let active = true;
+
+    const loadMaterialOptions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("materials")
+          .select("id, title, subject, topic")
+          .order("created_at", { ascending: false })
+          .limit(30);
+
+        if (!error && active) {
+          setMaterials((data ?? []) as MaterialOption[]);
+        }
+      } catch {
+        // Materials are optional; the AI panel still works from the topic.
+      }
+    };
+
+    void loadMaterialOptions();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const visibleItems = useMemo(() => {
     if (!items) return [];
 
@@ -261,15 +308,22 @@ export default function TeacherQuizzesScreen() {
   }, [items, search, filter]);
 
   const openCreate = () => {
+    questionLoadRef.current += 1;
     setEditingId(null);
     setEditingStatus("draft");
     setForm(EMPTY_FORM);
     setQuestions([makeEmptyQuestion()]);
     setFormErrors({});
+    setExistingQuestionIds([]);
+    setQuestionsReady(true);
+    setAiMaterialId("");
     setModalVisible(true);
   };
 
   const openEdit = async (item: QuizRow) => {
+    const requestId = questionLoadRef.current + 1;
+    questionLoadRef.current = requestId;
+
     setEditingId(item.id);
     setEditingStatus(item.status);
     setForm({
@@ -281,6 +335,9 @@ export default function TeacherQuizzesScreen() {
     });
     setFormErrors({});
     setQuestions([]);
+    setExistingQuestionIds([]);
+    setQuestionsReady(false);
+    setAiMaterialId("");
     setModalVisible(true);
 
     // Load the existing questions for editing.
@@ -293,7 +350,12 @@ export default function TeacherQuizzesScreen() {
 
       if (error) throw new Error(error.message);
 
-      const loaded: QuestionDraft[] = (data ?? []).map((row) => ({
+      // The modal may have been closed or another quiz opened while this
+      // request was in flight; ignore stale responses.
+      if (questionLoadRef.current !== requestId) return;
+
+      const rows = data ?? [];
+      const loaded: QuestionDraft[] = rows.map((row) => ({
         key: makeKey(),
         prompt: row.prompt ?? "",
         options:
@@ -305,13 +367,21 @@ export default function TeacherQuizzesScreen() {
         explanation: row.explanation ?? "",
       }));
 
+      setExistingQuestionIds(rows.map((row) => row.id));
       setQuestions(loaded.length > 0 ? loaded : [makeEmptyQuestion()]);
+      setQuestionsReady(true);
     } catch (err) {
+      if (questionLoadRef.current !== requestId) return;
+
       const message =
         err instanceof Error ? err.message : "Something went wrong.";
       console.error("Load quiz questions error:", err);
       showNotice("Unable to Load Questions", message);
+      // Keep saving blocked: replacing questions we failed to read would
+      // destroy the existing set.
       setQuestions([makeEmptyQuestion()]);
+      setExistingQuestionIds([]);
+      setQuestionsReady(false);
     }
   };
 
@@ -327,7 +397,9 @@ export default function TeacherQuizzesScreen() {
   ) => {
     setQuestions((current) =>
       current.map((question) =>
-        question.key === key ? updater(question) : question,
+        question.key === key
+          ? { ...updater(question), aiGenerated: false }
+          : question,
       ),
     );
   };
@@ -341,6 +413,145 @@ export default function TeacherQuizzesScreen() {
       if (current.length <= 1) return current;
       return current.filter((question) => question.key !== key);
     });
+  };
+
+  const selectAiMaterial = (material: MaterialOption | null) => {
+    if (!material) {
+      setAiMaterialId("");
+      return;
+    }
+
+    setAiMaterialId(material.id);
+    setForm((current) => ({
+      ...current,
+      subject: current.subject.trim() || material.subject,
+      topic: current.topic.trim() || material.topic || material.title,
+    }));
+  };
+
+  const resolveAiContext = () => {
+    const subject = form.subject.trim();
+    const topic = form.topic.trim() || form.title.trim();
+
+    if (!subject || !topic) {
+      setFormErrors((current) => ({
+        ...current,
+        ...(subject ? {} : { subject: "Add a subject before using AI." }),
+        ...(topic ? {} : { topic: "Add a topic or title before using AI." }),
+      }));
+      showNotice(
+        "Add quiz details first",
+        "AI needs a subject and a topic (or title) to draft questions.",
+      );
+      return null;
+    }
+
+    return { subject, topic };
+  };
+
+  const handleAiGenerate = () => {
+    if (generating || saving || regeneratingKey || !questionsReady) return;
+
+    const context = resolveAiContext();
+    if (!context) return;
+
+    const run = async () => {
+      setGenerating(true);
+
+      const result = await generateTeacherAi({
+        mode: "quiz",
+        subject: context.subject,
+        topic: context.topic,
+        difficulty: form.difficulty,
+        questionCount: aiCount,
+        materialId: aiMaterialId || undefined,
+      });
+
+      setGenerating(false);
+
+      if (result.status !== "ok") {
+        showNotice("AI Draft Failed", result.message);
+        return;
+      }
+
+      if (result.mode !== "quiz") {
+        showNotice("AI Draft Failed", "The AI returned an unexpected draft.");
+        return;
+      }
+
+      setQuestions(
+        result.questions.map((question) => ({
+          key: makeKey(),
+          ...question,
+          aiGenerated: true,
+        })),
+      );
+      setFormErrors((current) => {
+        const next = { ...current };
+        for (const key of Object.keys(next)) {
+          if (key.startsWith("question-")) delete next[key];
+        }
+        return next;
+      });
+    };
+
+    const hasDrafts = questions.some(
+      (question) =>
+        question.prompt.trim() ||
+        question.options.some((option) => option.trim()),
+    );
+
+    if (hasDrafts) {
+      confirmAction(
+        "Replace current questions?",
+        "AI will replace the questions in this form. Nothing is saved until you tap Save.",
+        run,
+        { confirmLabel: "Replace", destructive: true },
+      );
+      return;
+    }
+
+    void run();
+  };
+
+  const handleRegenerateQuestion = async (key: string) => {
+    if (generating || saving || regeneratingKey) return;
+
+    const context = resolveAiContext();
+    if (!context) return;
+
+    setRegeneratingKey(key);
+
+    const result = await generateTeacherAi({
+      mode: "quiz",
+      subject: context.subject,
+      topic: context.topic,
+      difficulty: form.difficulty,
+      questionCount: 1,
+      materialId: aiMaterialId || undefined,
+    });
+
+    setRegeneratingKey(null);
+
+    if (result.status !== "ok") {
+      showNotice("AI Draft Failed", result.message);
+      return;
+    }
+
+    if (result.mode !== "quiz" || result.questions.length === 0) {
+      showNotice("AI Draft Failed", "The AI returned an unexpected draft.");
+      return;
+    }
+
+    const generated = result.questions[0];
+
+    setQuestions((current) =>
+      current.map((question) =>
+        question.key === key
+          ? { key: question.key, ...generated, aiGenerated: true }
+          : question,
+      ),
+    );
   };
 
   const validate = (): Record<string, string> => {
@@ -395,6 +606,14 @@ export default function TeacherQuizzesScreen() {
 
   const handleSave = async (status: QuizStatus) => {
     if (saving) return;
+
+    if (!questionsReady) {
+      showNotice(
+        "Questions Still Loading",
+        "Wait for the existing questions to finish loading before saving.",
+      );
+      return;
+    }
 
     const errors = validate();
     setFormErrors(errors);
@@ -471,14 +690,6 @@ export default function TeacherQuizzesScreen() {
 
       if (!quizId) throw new Error("The quiz could not be saved.");
 
-      // Replace the question set: delete existing rows, then insert the form.
-      const { error: deleteError } = await supabase
-        .from("quiz_questions")
-        .delete()
-        .eq("quiz_id", quizId);
-
-      if (deleteError) throw new Error(deleteError.message);
-
       const questionPayload = questions.map((question, index) => ({
         quiz_id: quizId,
         position: index + 1,
@@ -488,11 +699,30 @@ export default function TeacherQuizzesScreen() {
         explanation: question.explanation.trim(),
       }));
 
-      const { error: insertError } = await supabase
+      // Insert the new set before removing the old rows so a failed insert
+      // cannot leave the quiz with zero questions.
+      const { data: insertedRows, error: insertError } = await supabase
         .from("quiz_questions")
-        .insert(questionPayload);
+        .insert(questionPayload)
+        .select("id");
 
       if (insertError) throw new Error(insertError.message);
+
+      if (existingQuestionIds.length > 0) {
+        const { error: deleteError } = await supabase
+          .from("quiz_questions")
+          .delete()
+          .in("id", existingQuestionIds);
+
+        if (deleteError) {
+          // Roll the newly inserted rows back so the original set survives.
+          const insertedIds = (insertedRows ?? []).map((row) => row.id);
+          if (insertedIds.length > 0) {
+            await supabase.from("quiz_questions").delete().in("id", insertedIds);
+          }
+          throw new Error(deleteError.message);
+        }
+      }
 
       setModalVisible(false);
       setFormErrors({});
@@ -979,6 +1209,145 @@ export default function TeacherQuizzesScreen() {
                 <Text style={styles.errorText}>{formErrors.description}</Text>
               )}
 
+              {AI_ENABLED ? (
+                <View style={styles.aiPanel}>
+                  <View style={styles.aiPanelHeader}>
+                    <View style={styles.aiPanelTitleRow}>
+                      <Ionicons name="sparkles" size={15} color={GREEN} />
+                      <Text style={styles.aiPanelTitle}>AI quiz draft</Text>
+                    </View>
+
+                    {generating ? (
+                      <ActivityIndicator size="small" color={GREEN} />
+                    ) : null}
+                  </View>
+
+                  <Text style={styles.aiHint}>
+                    Generate draft questions from the topic or one of your
+                    materials. Review every answer before publishing.
+                  </Text>
+
+                  <Text style={styles.aiLabel}>Questions</Text>
+                  <View style={styles.aiChipRow}>
+                    {[3, 5, 10].map((count) => {
+                      const active = aiCount === count;
+
+                      return (
+                        <Pressable
+                          key={count}
+                          onPress={() => setAiCount(count)}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          style={[
+                            styles.aiChip,
+                            active && styles.aiChipActive,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.aiChipText,
+                              active && styles.aiChipTextActive,
+                            ]}
+                          >
+                            {count}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+
+                  <Text style={styles.aiLabel}>Source material</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                    contentContainerStyle={styles.aiMaterialRow}
+                  >
+                    <Pressable
+                      onPress={() => selectAiMaterial(null)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: !aiMaterialId }}
+                      style={[
+                        styles.aiChip,
+                        styles.aiMaterialChip,
+                        !aiMaterialId && styles.aiChipActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.aiChipText,
+                          !aiMaterialId && styles.aiChipTextActive,
+                        ]}
+                      >
+                        Topic only
+                      </Text>
+                    </Pressable>
+
+                    {materials.map((material) => {
+                      const active = aiMaterialId === material.id;
+
+                      return (
+                        <Pressable
+                          key={material.id}
+                          onPress={() => selectAiMaterial(material)}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          style={[
+                            styles.aiChip,
+                            styles.aiMaterialChip,
+                            active && styles.aiChipActive,
+                          ]}
+                        >
+                          <Text
+                            numberOfLines={1}
+                            style={[
+                              styles.aiChipText,
+                              active && styles.aiChipTextActive,
+                            ]}
+                          >
+                            {material.title}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+
+                  <Pressable
+                    onPress={handleAiGenerate}
+                    disabled={
+                      generating ||
+                      saving ||
+                      !!regeneratingKey ||
+                      !questionsReady
+                    }
+                    accessibilityRole="button"
+                    accessibilityLabel="Generate quiz questions with AI"
+                    style={({ pressed }) => [
+                      styles.aiGenerateButton,
+                      (generating ||
+                        saving ||
+                        !!regeneratingKey ||
+                        !questionsReady) &&
+                        styles.disabled,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    {generating ? (
+                      <Text style={styles.aiGenerateText}>
+                        Drafting questions...
+                      </Text>
+                    ) : (
+                      <>
+                        <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
+                        <Text style={styles.aiGenerateText}>
+                          Generate {aiCount} questions
+                        </Text>
+                      </>
+                    )}
+                  </Pressable>
+                </View>
+              ) : null}
+
               <View style={styles.questionsHeader}>
                 <Text style={styles.questionsTitle}>Questions</Text>
                 <Text style={styles.questionsCount}>
@@ -990,24 +1359,63 @@ export default function TeacherQuizzesScreen() {
               {questions.map((question, index) => (
                 <View key={question.key} style={styles.questionCard}>
                   <View style={styles.questionTop}>
-                    <Text style={styles.questionNumber}>
-                      Question {index + 1}
-                    </Text>
+                    <View style={styles.questionTopLeft}>
+                      <Text style={styles.questionNumber}>
+                        Question {index + 1}
+                      </Text>
 
-                    {questions.length > 1 && (
-                      <Pressable
-                        onPress={() => removeQuestion(question.key)}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Remove question ${index + 1}`}
-                        hitSlop={6}
-                      >
-                        <Ionicons
-                          name="trash-outline"
-                          size={18}
-                          color="#C53030"
-                        />
-                      </Pressable>
-                    )}
+                      {question.aiGenerated ? (
+                        <View style={styles.aiBadge}>
+                          <Ionicons name="sparkles" size={10} color={GREEN} />
+                          <Text style={styles.aiBadgeText}>AI draft</Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <View style={styles.questionTopActions}>
+                      {AI_ENABLED ? (
+                        <Pressable
+                          onPress={() =>
+                            void handleRegenerateQuestion(question.key)
+                          }
+                          disabled={
+                            generating || saving || !!regeneratingKey
+                          }
+                          accessibilityRole="button"
+                          accessibilityLabel={`Regenerate question ${index + 1} with AI`}
+                          hitSlop={6}
+                          style={({ pressed }) => [
+                            styles.regenerateButton,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          {regeneratingKey === question.key ? (
+                            <ActivityIndicator size="small" color={GREEN} />
+                          ) : (
+                            <Ionicons
+                              name="refresh"
+                              size={15}
+                              color={GREEN}
+                            />
+                          )}
+                        </Pressable>
+                      ) : null}
+
+                      {questions.length > 1 && (
+                        <Pressable
+                          onPress={() => removeQuestion(question.key)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Remove question ${index + 1}`}
+                          hitSlop={6}
+                        >
+                          <Ionicons
+                            name="trash-outline"
+                            size={18}
+                            color="#C53030"
+                          />
+                        </Pressable>
+                      )}
+                    </View>
                   </View>
 
                   <TextInput
@@ -1380,6 +1788,79 @@ const styles = StyleSheet.create({
   difficultyChipActive: { backgroundColor: GREEN, borderColor: GREEN },
   difficultyChipText: { fontSize: 13, fontWeight: "700", color: "#4A5F52" },
   difficultyChipTextActive: { color: "#FFFFFF" },
+  aiPanel: {
+    marginTop: spacing.md + 2,
+    backgroundColor: "#F3F9F5",
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "#D9EADF",
+    padding: spacing.md + 2,
+    gap: spacing.sm,
+  },
+  aiPanelHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  aiPanelTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  aiPanelTitle: { fontSize: 13, fontWeight: "800", color: DARK_GREEN },
+  aiHint: { fontSize: 11, lineHeight: 16, color: "#5B7163" },
+  aiLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#6B7F72",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    marginTop: 2,
+  },
+  aiChipRow: { flexDirection: "row", gap: 7 },
+  aiMaterialRow: { flexDirection: "row", gap: 7, paddingRight: 4 },
+  aiChip: {
+    minHeight: 36,
+    minWidth: 44,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: "#CFE2D6",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  aiMaterialChip: { maxWidth: 170 },
+  aiChipActive: { backgroundColor: GREEN, borderColor: GREEN },
+  aiChipText: { fontSize: 12, fontWeight: "700", color: "#43584A" },
+  aiChipTextActive: { color: "#FFFFFF" },
+  aiGenerateButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    backgroundColor: GREEN,
+    borderRadius: radius.md,
+    minHeight: 46,
+    marginTop: 4,
+  },
+  aiGenerateText: { fontSize: 13, fontWeight: "800", color: "#FFFFFF" },
+  questionTopLeft: { flexDirection: "row", alignItems: "center", gap: 7 },
+  questionTopActions: { flexDirection: "row", alignItems: "center", gap: 12 },
+  aiBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#E6F2EA",
+    borderRadius: radius.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  aiBadgeText: { fontSize: 9, fontWeight: "800", color: GREEN },
+  regenerateButton: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    backgroundColor: "#EAF4ED",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   questionsHeader: {
     flexDirection: "row",
     alignItems: "center",

@@ -2,6 +2,7 @@ import { ActionCard } from "@/components/ui/action-card";
 import { Card } from "@/components/ui/card";
 import { SectionHeader } from "@/components/ui/section-header";
 import { colors, radius, spacing } from "@/theme/tokens";
+import { AI_ENABLED } from "@/utils/aiFlags";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import {
@@ -88,16 +89,18 @@ export default function StudentHomeScreen() {
             />
           </View>
 
-          <View style={styles.gridCell}>
-            <ActionCard
-              icon="chatbubbles-outline"
-              iconColor="#6953B8"
-              iconBg="#E9E6FA"
-              title="AI Buddy"
-              description="Ask study questions"
-              onPress={() => openScreen("/student/ai-buddy")}
-            />
-          </View>
+          {AI_ENABLED ? (
+            <View style={styles.gridCell}>
+              <ActionCard
+                icon="chatbubbles-outline"
+                iconColor="#6953B8"
+                iconBg="#E9E6FA"
+                title="AI Buddy"
+                description="Ask study questions"
+                onPress={() => openScreen("/student/ai-buddy")}
+              />
+            </View>
+          ) : null}
 
           <View style={styles.gridCell}>
             <ActionCard

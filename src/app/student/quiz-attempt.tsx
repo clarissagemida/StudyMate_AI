@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { AI_ENABLED } from "@/utils/aiFlags";
 import { confirmAction } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
@@ -64,6 +65,35 @@ function isMissingRelation(
 
 function difficultyLabel(value: Difficulty) {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function buildMistakePrompt(
+  quiz: QuizMeta,
+  questions: Question[],
+  selections: Record<string, number>,
+  score: number,
+  total: number,
+): string {
+  const missed = questions
+    .filter((question) => selections[question.id] !== question.correct_index)
+    .slice(0, 3);
+
+  const lines = missed.map((question, index) => {
+    const selected = selections[question.id];
+    const chosen =
+      selected === undefined
+        ? "No answer"
+        : question.options[selected] ?? "No answer";
+    const correct = question.options[question.correct_index] ?? "";
+
+    return `${index + 1}. ${question.prompt.slice(0, 180)}
+My answer: ${chosen}
+Correct answer: ${correct}`;
+  });
+
+  return `I scored ${score}/${total} on "${quiz.title}". Please explain these questions simply.
+
+${lines.join("\n\n")}`.slice(0, 1900);
 }
 
 export default function QuizAttemptScreen() {
@@ -337,6 +367,16 @@ export default function QuizAttemptScreen() {
     const percent = total > 0 ? Math.round((score / total) * 100) : 0;
     const passed = percent >= 50;
     const circleColor = passed ? GREEN : "#B33A3A";
+    const wrongCount = questions.filter(
+      (question) => selections[question.id] !== question.correct_index,
+    ).length;
+    const mistakePrompt = buildMistakePrompt(
+      quiz,
+      questions,
+      selections,
+      score,
+      total,
+    );
 
     return (
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
@@ -374,6 +414,29 @@ export default function QuizAttemptScreen() {
                   results table may not be set up yet.
                 </Text>
               </View>
+            ) : null}
+
+            {AI_ENABLED && wrongCount > 0 ? (
+              <Pressable
+                onPress={() => {
+                  router.push({
+                    pathname: "/student/ai-buddy",
+                    params: { prompt: mistakePrompt },
+                  });
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Ask AI Buddy to explain my mistakes"
+                style={({ pressed }) => [
+                  styles.secondaryButton,
+                  styles.fullWidth,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Ionicons name="sparkles-outline" size={18} color={GREEN} />
+                <Text style={styles.secondaryButtonText}>
+                  Explain my mistakes
+                </Text>
+              </Pressable>
             ) : null}
 
             <Pressable

@@ -1,10 +1,5 @@
-import { supabase } from "@/lib/supabase";
-
-// Thin, typed wrapper around the study-buddy Edge Function.
-//
-// The function holds the AI key and enforces that only approved students can
-// ask. This helper only sends text and normalizes the result so the screen can
-// render an answer, a "not connected" state, or an error.
+import { AI_ENABLED } from "@/utils/aiFlags";
+import { invokeAi } from "@/utils/aiClient";
 
 export type ChatRole = "user" | "assistant";
 
@@ -13,60 +8,88 @@ export type ChatMessage = {
   content: string;
 };
 
+export type AiSource = {
+  materialId: string;
+  title: string;
+};
+
 export type AskResult =
-  | { status: "ok"; reply: string }
+  | { status: "ok"; reply: string; sources: AiSource[] }
   | { status: "not_configured"; message: string }
   | { status: "error"; message: string };
 
-type FunctionResponse = {
-  status?: "ok" | "not_configured" | "error";
+type StudyBuddyResponse = {
+  status?: "ok" | "not_configured";
   reply?: string;
+  sources?: unknown;
   message?: string;
 };
+
+function normalizeSources(value: unknown): AiSource[] {
+  if (!Array.isArray(value)) return [];
+
+  const sources: AiSource[] = [];
+  const seen = new Set<string>();
+
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+
+    const materialId = (item as { materialId?: unknown }).materialId;
+    const title = (item as { title?: unknown }).title;
+
+    if (typeof materialId !== "string" || !materialId.trim()) continue;
+    if (typeof title !== "string" || !title.trim()) continue;
+    if (seen.has(materialId)) continue;
+
+    seen.add(materialId);
+    sources.push({ materialId, title: title.trim() });
+  }
+
+  return sources.slice(0, 4);
+}
 
 export async function askStudyBuddy(
   message: string,
   history: ChatMessage[] = [],
 ): Promise<AskResult> {
-  const { data, error } = await supabase.functions.invoke("study-buddy", {
-    // Only text is sent; the system prompt and model live on the server.
-    body: { message, history },
-  });
-
-  if (error) {
-    let errorMessage =
-      "Could not reach AI Buddy. Please check your connection and try again.";
-
-    const context = (error as { context?: Response }).context;
-
-    if (context) {
-      try {
-        const parsed = (await context.json()) as FunctionResponse;
-        if (parsed?.message) errorMessage = parsed.message;
-      } catch {
-        // Keep the generic message when the body cannot be read.
-      }
-    }
-
-    console.error("study-buddy function error:", error.message);
-    return { status: "error", message: errorMessage };
-  }
-
-  const result = (data ?? {}) as FunctionResponse;
-
-  if (result.status === "ok" && typeof result.reply === "string") {
-    return { status: "ok", reply: result.reply };
-  }
-
-  if (result.status === "not_configured") {
+  if (!AI_ENABLED) {
     return {
       status: "not_configured",
-      message: result.message ?? "AI Buddy is not connected yet.",
+      message: "AI Buddy is turned off in this build.",
+    };
+  }
+
+  const result = await invokeAi<StudyBuddyResponse>("study-buddy", {
+    message,
+    history,
+  });
+
+  if (!result.ok) {
+    return {
+      status: result.code === "not_configured" ? "not_configured" : "error",
+      message: result.message,
+    };
+  }
+
+  const data = result.data;
+
+  if (data.status === "ok" && typeof data.reply === "string") {
+    return {
+      status: "ok",
+      reply: data.reply,
+      sources: normalizeSources(data.sources),
+    };
+  }
+
+  if (data.status === "not_configured") {
+    return {
+      status: "not_configured",
+      message: data.message ?? "AI Buddy is not connected yet.",
     };
   }
 
   return {
     status: "error",
-    message: result.message ?? "AI Buddy could not answer that.",
+    message: data.message ?? "AI Buddy could not answer that.",
   };
 }
