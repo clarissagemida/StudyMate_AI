@@ -469,7 +469,7 @@ export default function AdminLayout() {
           title: "Admin Dashboard",
           drawerLabel: "Dashboard",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="grid-outline" color={color} size={size} />
+            <Ionicons name="grid-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
           ),
         }}
       />
@@ -480,7 +480,7 @@ export default function AdminLayout() {
           title: "User Management",
           drawerLabel: "User Management",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="people-outline" color={color} size={size} />
+            <Ionicons name="people-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
           ),
         }}
       />
@@ -491,7 +491,7 @@ export default function AdminLayout() {
           title: "Learning Materials",
           drawerLabel: "Learning Materials",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="book-outline" color={color} size={size} />
+            <Ionicons name="book-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
           ),
         }}
       />
@@ -502,7 +502,7 @@ export default function AdminLayout() {
           title: "Reports",
           drawerLabel: "Reports",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="bar-chart-outline" color={color} size={size} />
+            <Ionicons name="bar-chart-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
           ),
         }}
       />
@@ -513,7 +513,7 @@ export default function AdminLayout() {
           title: "AI Controls",
           drawerLabel: "AI Controls",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="sparkles-outline" color={color} size={size} />
+            <Ionicons name="sparkles-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
           ),
         }}
       />
@@ -524,7 +524,7 @@ export default function AdminLayout() {
           title: "Settings",
           drawerLabel: "Settings",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="settings-outline" color={color} size={size} />
+            <Ionicons name="settings-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
           ),
         }}
       />

@@ -1,14 +1,13 @@
 import { supabase } from "@/lib/supabase";
+import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from "react-native";
@@ -23,7 +22,6 @@ export default function AdminSettingsScreen() {
   const [email, setEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [signingOut, setSigningOut] = useState(false);
-  const [notifications, setNotifications] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -76,7 +74,7 @@ export default function AdminSettingsScreen() {
       const { error } = await supabase.auth.signOut();
 
       if (error) {
-        Alert.alert("Logout failed", error.message);
+        showNotice("Logout failed", error.message);
         return;
       }
 
@@ -90,7 +88,7 @@ export default function AdminSettingsScreen() {
       router.replace("/login");
     } catch (error) {
       console.error("Logout error:", error);
-      Alert.alert(
+      showNotice(
         "Logout failed",
         error instanceof Error ? error.message : "Please try again.",
       );
@@ -123,26 +121,6 @@ export default function AdminSettingsScreen() {
               </View>
             </>
           )}
-        </View>
-
-        <Text style={styles.sectionTitle}>Preferences</Text>
-
-        <View style={styles.row}>
-          <View style={styles.rowIcon}>
-            <Ionicons name="notifications-outline" size={20} color={GREEN} />
-          </View>
-          <View style={styles.rowContent}>
-            <Text style={styles.rowTitle}>Push notifications</Text>
-            <Text style={styles.rowSubtitle}>
-              Alerts about new account requests.
-            </Text>
-          </View>
-          <Switch
-            value={notifications}
-            onValueChange={setNotifications}
-            trackColor={{ false: "#CBD8CE", true: "#8FCBA6" }}
-            thumbColor={notifications ? GREEN : "#F4F4F4"}
-          />
         </View>
 
         <Text style={styles.sectionTitle}>About</Text>

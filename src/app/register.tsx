@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { decode } from "base64-arraybuffer";
 import * as ImagePicker from "expo-image-picker";
@@ -6,7 +7,6 @@ import { router } from "expo-router";
 import { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -80,7 +80,7 @@ export default function RegisterScreen() {
         await ImagePicker.requestMediaLibraryPermissionsAsync();
 
       if (!permission.granted) {
-        Alert.alert(
+        showNotice(
           "Photo Permission Needed",
           "Allow StudyMate AI to access your photo library to choose a profile picture.",
         );
@@ -100,7 +100,7 @@ export default function RegisterScreen() {
       const photo = result.assets[0];
 
       if (photo.fileSize && photo.fileSize > MAX_PHOTO_SIZE) {
-        Alert.alert(
+        showNotice(
           "Photo Is Too Large",
           "Please choose an image that is 5 MB or smaller.",
         );
@@ -108,7 +108,7 @@ export default function RegisterScreen() {
       }
 
       if (!photo.base64) {
-        Alert.alert(
+        showNotice(
           "Photo Error",
           "Expo could not read the selected photo. Please select another image.",
         );
@@ -120,7 +120,7 @@ export default function RegisterScreen() {
       setAvatarBase64(photo.base64);
     } catch (error) {
       console.error("Photo selection failed:", error);
-      Alert.alert(
+      showNotice(
         "Unable to Select Photo",
         "Please try choosing your photo again.",
       );
@@ -204,7 +204,7 @@ export default function RegisterScreen() {
       !password ||
       !confirmPassword
     ) {
-      Alert.alert(
+      showNotice(
         "Missing Information",
         "Please complete all required fields.",
       );
@@ -212,17 +212,17 @@ export default function RegisterScreen() {
     }
 
     if (cleanName.length < 2) {
-      Alert.alert("Invalid Name", "Please enter your full name.");
+      showNotice("Invalid Name", "Please enter your full name.");
       return;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      Alert.alert("Invalid Email", "Please enter a valid email address.");
+      showNotice("Invalid Email", "Please enter a valid email address.");
       return;
     }
 
     if (!passwordChecks.every((check) => check.valid)) {
-      Alert.alert(
+      showNotice(
         "Password Requirements Not Met",
         "Use at least 8 characters, one uppercase letter, one lowercase letter, one number, and one special character.",
       );
@@ -230,7 +230,7 @@ export default function RegisterScreen() {
     }
 
     if (password !== confirmPassword) {
-      Alert.alert(
+      showNotice(
         "Passwords Do Not Match",
         "Please make sure both passwords are the same.",
       );
@@ -273,23 +273,18 @@ export default function RegisterScreen() {
           message.includes("email address is already") ||
           message.includes("already exists")
         ) {
-          Alert.alert(
+          confirmAction(
             "Email Already Registered",
             "This email may already have an account. Try logging in or use another email address.",
-            [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Go to Login",
-                onPress: () => router.replace("/login"),
-              },
-            ],
+            () => router.replace("/login"),
+            { confirmLabel: "Go to Login" },
           );
         } else if (
           message.includes("duplicate key") ||
           message.includes("unique constraint") ||
           errorCode === "23505"
         ) {
-          Alert.alert(
+          showNotice(
             "Information Already Exists",
             "Your Student / School ID or another unique field may already be registered. Check your details and your profiles table.",
           );
@@ -297,7 +292,7 @@ export default function RegisterScreen() {
           message.includes("over_email_send_rate_limit") ||
           message.includes("rate limit")
         ) {
-          Alert.alert(
+          showNotice(
             "Too Many Attempts",
             "Supabase has limited registration attempts. Wait before trying again.",
           );
@@ -307,13 +302,13 @@ export default function RegisterScreen() {
           message.includes("invalid format") ||
           message.includes("invalid email")
         ) {
-          Alert.alert("Invalid Email", "Please check your email address.");
+          showNotice("Invalid Email", "Please check your email address.");
         } else if (
           message.includes("weak_password") ||
           message.includes("password should") ||
           message.includes("password is too")
         ) {
-          Alert.alert(
+          showNotice(
             "Password Rejected",
             "Supabase rejected the password. Check your project's password policy.",
           );
@@ -321,7 +316,7 @@ export default function RegisterScreen() {
           message.includes("database error saving new user") ||
           message.includes("error creating user")
         ) {
-          Alert.alert(
+          showNotice(
             "Database Registration Error",
             "Supabase could not finish creating your account. Check the profiles table, database trigger, and required columns.",
           );
@@ -330,12 +325,12 @@ export default function RegisterScreen() {
           message.includes("failed to fetch") ||
           message.includes("network")
         ) {
-          Alert.alert(
+          showNotice(
             "Connection Problem",
             "Unable to connect to Supabase. Check your internet connection and Supabase configuration.",
           );
         } else {
-          Alert.alert(
+          showNotice(
             "Registration Failed",
             `${error.message}\n\nError code: ${errorCode || "Not provided"}`,
           );
@@ -345,7 +340,7 @@ export default function RegisterScreen() {
       }
 
       if (!data.user) {
-        Alert.alert(
+        showNotice(
           "Registration Incomplete",
           "Supabase did not return a user account. Please try again.",
         );
@@ -404,15 +399,11 @@ export default function RegisterScreen() {
           details: sendCodeError,
         });
 
-        Alert.alert(
+        confirmAction(
           "Account Created — Email Not Sent",
           "Your account was created, but StudyMate AI could not send the verification code yet. Continue to the verification screen and try sending the code again.",
-          [
-            {
-              text: "Continue",
-              onPress: goToVerification,
-            },
-          ],
+          goToVerification,
+          { confirmLabel: "Continue", cancelLabel: "Stay" },
         );
 
         return;
@@ -431,16 +422,16 @@ export default function RegisterScreen() {
         successMessage += "\n\nYour photo can be added after you sign in.";
       }
 
-      Alert.alert("Registration Successful", successMessage, [
-        {
-          text: "Verify Email",
-          onPress: goToVerification,
-        },
-      ]);
+      confirmAction(
+        "Registration Successful",
+        successMessage,
+        goToVerification,
+        { confirmLabel: "Verify Email", cancelLabel: "Later" },
+      );
     } catch (error: unknown) {
       console.error("Unexpected registration error:", error);
 
-      Alert.alert(
+      showNotice(
         "Something Went Wrong",
         error instanceof Error
           ? error.message

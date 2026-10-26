@@ -56,7 +56,7 @@ export default function TeacherTabLayout() {
             <Ionicons
               name={focused ? "grid" : "grid-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}
@@ -70,7 +70,7 @@ export default function TeacherTabLayout() {
             <Ionicons
               name={focused ? "book" : "book-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}
@@ -84,7 +84,7 @@ export default function TeacherTabLayout() {
             <Ionicons
               name={focused ? "clipboard" : "clipboard-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}
@@ -98,7 +98,7 @@ export default function TeacherTabLayout() {
             <Ionicons
               name={focused ? "person" : "person-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}

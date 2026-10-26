@@ -11,6 +11,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  type TextInputInstance,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -133,7 +134,7 @@ export default function VerifyEmailScreen() {
     initialEmail ? RESEND_COOLDOWN_SECONDS : 0,
   );
 
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<TextInputInstance>(null);
   const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {

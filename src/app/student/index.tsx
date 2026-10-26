@@ -1,10 +1,12 @@
+import { supabase } from "@/lib/supabase";
 import { ActionCard } from "@/components/ui/action-card";
 import { Card } from "@/components/ui/card";
 import { SectionHeader } from "@/components/ui/section-header";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { AI_ENABLED } from "@/utils/aiFlags";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
 import {
   ScrollView,
   StatusBar,
@@ -20,14 +22,149 @@ const DARK_GREEN = colors.primaryDeep;
 const BACKGROUND = colors.background;
 const MUTED = colors.textMuted;
 
+type AttemptSummary = {
+  id: string;
+  quiz_id: string;
+  score: number;
+  total: number;
+  created_at: string;
+};
+
+function isMissingRelation(error: {
+  code?: string;
+  message?: string;
+} | null): boolean {
+  if (!error) return false;
+  if (error.code === "PGRST205" || error.code === "42P01") return true;
+
+  const message = (error.message ?? "").toLowerCase();
+  return (
+    message.includes("could not find the table") ||
+    message.includes("does not exist")
+  );
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
+
+  return date.toLocaleDateString("en-PH", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export default function StudentHomeScreen() {
+  const [fullName, setFullName] = useState("");
+  const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
+  const [quizTitles, setQuizTitles] = useState<Record<string, string>>({});
+
   const openScreen = (path: string) => {
     router.push(path as never);
   };
 
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      const loadOverview = async () => {
+        try {
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+
+          if (!active || !user) return;
+
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("full_name")
+            .eq("id", user.id)
+            .maybeSingle();
+
+          if (active && profile?.full_name?.trim()) {
+            setFullName(profile.full_name.trim());
+          }
+
+          const { data, error } = await supabase
+            .from("quiz_attempts")
+            .select("id, quiz_id, score, total, created_at")
+            .eq("student_id", user.id)
+            .order("created_at", { ascending: false })
+            .limit(10);
+
+          if (!active) return;
+
+          if (error) {
+            if (!isMissingRelation(error)) {
+              console.warn("Could not load quiz history:", error.message);
+            }
+            return;
+          }
+
+          const rows = (data ?? []) as AttemptSummary[];
+          setAttempts(rows);
+
+          const quizIds = Array.from(
+            new Set(rows.map((attempt) => attempt.quiz_id)),
+          );
+
+          if (quizIds.length === 0) return;
+
+          const { data: quizRows, error: quizError } = await supabase
+            .from("quizzes")
+            .select("id, title")
+            .in("id", quizIds);
+
+          if (!active || quizError) return;
+
+          const titles: Record<string, string> = {};
+          for (const row of quizRows ?? []) {
+            titles[row.id] = row.title;
+          }
+          setQuizTitles(titles);
+        } catch (error) {
+          console.warn("Could not load student overview:", error);
+        }
+      };
+
+      void loadOverview();
+
+      return () => {
+        active = false;
+      };
+    }, []),
+  );
+
+  const firstName = fullName.split(/\s+/)[0] || "Student";
+
+  const totalCorrect = attempts.reduce(
+    (sum, attempt) => sum + attempt.score,
+    0,
+  );
+  const totalQuestions = attempts.reduce(
+    (sum, attempt) => sum + attempt.total,
+    0,
+  );
+  const averagePercent =
+    totalQuestions > 0
+      ? Math.round((totalCorrect / totalQuestions) * 100)
+      : 0;
+  const hasAttempts = attempts.length > 0;
+
+  const latestAttempt = attempts[0];
+  const latestPercent =
+    latestAttempt && latestAttempt.total > 0
+      ? Math.round((latestAttempt.score / latestAttempt.total) * 100)
+      : 0;
+  const latestTitle = latestAttempt
+    ? (quizTitles[latestAttempt.quiz_id] ?? "Quiz")
+    : "";
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={BACKGROUND} />
+      <StatusBar barStyle="dark-content" />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -37,7 +174,9 @@ export default function StudentHomeScreen() {
         <View style={styles.header}>
           <View style={styles.greeting}>
             <Text style={styles.eyebrow}>STUDYMATE AI</Text>
-            <Text style={styles.welcome}>Hello, Student!</Text>
+            <Text style={styles.welcome} numberOfLines={1}>
+              Hello, {firstName}!
+            </Text>
             <Text style={styles.subtitle}>
               Ready to learn something new today?
             </Text>
@@ -52,27 +191,39 @@ export default function StudentHomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Study Goal */}
+        {/* Progress */}
         <View style={styles.goalCard}>
           <View style={styles.goalTop}>
             <View style={styles.goalText}>
-              <Text style={styles.goalLabel}>YOUR DAILY STUDY GOAL</Text>
-              <Text style={styles.goalTitle}>15 minutes a day</Text>
+              <Text style={styles.goalLabel}>YOUR PROGRESS</Text>
+              <Text style={styles.goalTitle}>
+                {hasAttempts
+                  ? `${averagePercent}% average score`
+                  : "No quizzes completed yet"}
+              </Text>
               <Text style={styles.goalSubtitle}>
-                Keep learning, one step at a time.
+                {hasAttempts
+                  ? `Across your last ${attempts.length} ${
+                      attempts.length === 1 ? "quiz" : "quizzes"
+                    }`
+                  : "Take a quiz to start building your progress."}
               </Text>
             </View>
 
             <View style={styles.goalIcon}>
-              <Ionicons name="book-outline" size={28} color="#FFFFFF" />
+              <Ionicons name="stats-chart-outline" size={28} color="#FFFFFF" />
             </View>
           </View>
 
           <View style={styles.progressTrack}>
-            <View style={styles.progressFill} />
+            <View
+              style={[styles.progressFill, { width: `${averagePercent}%` }]}
+            />
           </View>
           <Text style={styles.goalProgress}>
-            Example progress · 5 of 15 minutes
+            {hasAttempts
+              ? `${totalCorrect} of ${totalQuestions} questions answered correctly`
+              : "Your results will appear here after your first quiz."}
           </Text>
         </View>
 
@@ -119,8 +270,8 @@ export default function StudentHomeScreen() {
               iconColor="#267B83"
               iconBg="#DFF1F3"
               title="My Progress"
-              description="Track your learning"
-              onPress={() => openScreen("/student/profile")}
+              description="Review your quiz scores"
+              onPress={() => openScreen("/student/quizzes")}
             />
           </View>
         </View>
@@ -132,18 +283,45 @@ export default function StudentHomeScreen() {
           onAction={() => openScreen("/student/quizzes")}
         />
 
-        <Card style={styles.activityCard}>
-          <View style={styles.activityIcon}>
-            <Ionicons name="document-text-outline" size={24} color={GREEN} />
-          </View>
+        <TouchableOpacity
+          onPress={() => openScreen("/student/quizzes")}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Open your quiz history"
+        >
+          <Card style={styles.activityCard}>
+            <View style={styles.activityIcon}>
+              <Ionicons
+                name="document-text-outline"
+                size={24}
+                color={GREEN}
+              />
+            </View>
 
-          <View style={styles.activityText}>
-            <Text style={styles.activityTitle}>Your quiz history</Text>
-            <Text style={styles.activityDescription}>
-              Your completed quizzes and scores will appear here.
-            </Text>
-          </View>
-        </Card>
+            <View style={styles.activityText}>
+              {latestAttempt ? (
+                <>
+                  <Text style={styles.activityTitle} numberOfLines={1}>
+                    {latestTitle}
+                  </Text>
+                  <Text style={styles.activityDescription}>
+                    Scored {latestAttempt.score}/{latestAttempt.total} (
+                    {latestPercent}%) · {formatDate(latestAttempt.created_at)}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.activityTitle}>Your quiz history</Text>
+                  <Text style={styles.activityDescription}>
+                    Your completed quizzes and scores will appear here.
+                  </Text>
+                </>
+              )}
+            </View>
+
+            <Ionicons name="chevron-forward" size={18} color={MUTED} />
+          </Card>
+        </TouchableOpacity>
 
         {/* Study Tip */}
         <View style={styles.tipCard}>

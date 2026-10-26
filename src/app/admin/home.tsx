@@ -1,10 +1,10 @@
 import { supabase } from "@/lib/supabase";
+import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -103,7 +103,7 @@ export default function AdminHomeScreen() {
         profile?.role !== "admin" ||
         profile?.approval_status !== "approved"
       ) {
-        Alert.alert(
+        showNotice(
           "Access denied",
           "This page is only available to approved administrators.",
         );
@@ -182,7 +182,7 @@ export default function AdminHomeScreen() {
         hint: err?.hint,
       });
 
-      Alert.alert(
+      showNotice(
         "Unable to load dashboard",
         err?.message ||
           "Please check your internet connection, database schema, and Supabase access policies.",
@@ -217,7 +217,7 @@ export default function AdminHomeScreen() {
   if (loading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor="#F4F8F5" />
+        <StatusBar barStyle="dark-content" />
 
         <View style={styles.loadingIcon}>
           <Ionicons name="school-outline" size={34} color="#16794A" />
@@ -235,7 +235,7 @@ export default function AdminHomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F4F8F5" />
+      <StatusBar barStyle="dark-content" />
 
       <ScrollView
         showsVerticalScrollIndicator={false}

@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { authenticateWithBiometrics } from "@/utils/biometrics";
+import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import type { User } from "@supabase/supabase-js";
 import { makeRedirectUri } from "expo-auth-session";
@@ -10,7 +11,6 @@ import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -23,6 +23,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+// Completes the browser-based OAuth session when returning to the app.
+WebBrowser.maybeCompleteAuthSession();
+
 type LoadingMode = "password" | "google" | "biometric" | "email-code" | null;
 
 export default function LoginScreen() {
@@ -34,9 +37,6 @@ export default function LoginScreen() {
 
   const isBusy = loading !== null;
 
-  // Completes the browser-based OAuth session when returning to the app.
-  WebBrowser.maybeCompleteAuthSession();
-
   const handleGoogleLogin = async () => {
     if (loading !== null) return;
     setLoading("google");
@@ -45,7 +45,7 @@ export default function LoginScreen() {
       const redirectTo = makeRedirectUri({
         scheme: "studymateai",
       });
-      // Alert.alert("Google Redirect URL", redirectTo);
+      // showNotice("Google Redirect URL", redirectTo);
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -123,7 +123,7 @@ export default function LoginScreen() {
       );
     } catch (error) {
       console.error("Google sign-in error:", error);
-      Alert.alert(
+      showNotice(
         "Google Sign-In Failed",
         error instanceof Error ? error.message : "Please try again.",
       );
@@ -146,24 +146,19 @@ export default function LoginScreen() {
 
         const targetEmail = (user.email ?? "").trim().toLowerCase();
 
-        Alert.alert(
+        confirmAction(
           "Email Not Verified",
           "Please verify your email address before signing in. We can send a new code.",
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Verify Email",
-              onPress: () => {
-                router.replace({
-                  pathname: "/verify-email",
-                  params: {
-                    ...(targetEmail ? { email: targetEmail } : {}),
-                    userId: user.id,
-                  },
-                });
+          () => {
+            router.replace({
+              pathname: "/verify-email",
+              params: {
+                ...(targetEmail ? { email: targetEmail } : {}),
+                userId: user.id,
               },
-            },
-          ],
+            });
+          },
+          { confirmLabel: "Verify Email", cancelLabel: "Cancel" },
         );
         return;
       }
@@ -181,7 +176,7 @@ export default function LoginScreen() {
         // verification never leaves a half-authenticated state behind.
         await supabase.auth.signOut();
 
-        Alert.alert(
+        showNotice(
           "Connection Error",
           "We couldn't verify your account. Check your internet connection and try again.",
         );
@@ -191,7 +186,7 @@ export default function LoginScreen() {
       if (!profile) {
         await supabase.auth.signOut();
 
-        Alert.alert(
+        showNotice(
           "Profile Error",
           "We couldn't find your StudyMate profile. Please contact the administrator.",
         );
@@ -203,12 +198,12 @@ export default function LoginScreen() {
         await supabase.auth.signOut();
 
         if (profile.approval_status === "rejected") {
-          Alert.alert(
+          showNotice(
             "Registration Not Approved",
             "Your registration was not approved. Please contact the administrator for assistance.",
           );
         } else {
-          Alert.alert(
+          showNotice(
             "Account Pending Approval",
             "Your account is waiting for administrator approval. You can sign in after it has been approved.",
           );
@@ -239,7 +234,7 @@ export default function LoginScreen() {
         default:
           await supabase.auth.signOut();
 
-          Alert.alert(
+          showNotice(
             "Invalid Role",
             "Your account role could not be verified. Please contact the administrator.",
           );
@@ -256,7 +251,7 @@ export default function LoginScreen() {
         );
       }
 
-      Alert.alert(
+      showNotice(
         "Verification Error",
         "We couldn't verify your account. Please try again.",
       );
@@ -270,7 +265,7 @@ export default function LoginScreen() {
     const normalizedEmail = email.trim().toLowerCase();
 
     if (!normalizedEmail || !password) {
-      Alert.alert(
+      showNotice(
         "Missing Information",
         "Please enter your email address and password.",
       );
@@ -286,7 +281,7 @@ export default function LoginScreen() {
       });
 
       if (error || !data.user) {
-        Alert.alert(
+        showNotice(
           "Login Failed",
           error?.message ??
             "Please check your email and password and try again.",
@@ -296,7 +291,7 @@ export default function LoginScreen() {
 
       await verifyAccountAndNavigate(data.user);
     } catch {
-      Alert.alert(
+      showNotice(
         "Connection Error",
         "Please check your internet connection and try again.",
       );
@@ -320,7 +315,7 @@ export default function LoginScreen() {
       } = await supabase.auth.getSession();
 
       if (sessionError) {
-        Alert.alert(
+        showNotice(
           "Session Error",
           "We couldn't check your saved session. Please check your connection and try again.",
         );
@@ -328,7 +323,7 @@ export default function LoginScreen() {
       }
 
       if (!session?.user) {
-        Alert.alert(
+        showNotice(
           "Sign In Required",
           "Please sign in with your StudyMate email and password first. Biometric unlock works with an existing saved session.",
         );
@@ -339,7 +334,7 @@ export default function LoginScreen() {
       const result = await authenticateWithBiometrics();
 
       if (!result.success) {
-        Alert.alert("Biometric Verification", result.message);
+        showNotice("Biometric Verification", result.message);
         return;
       }
 
@@ -350,7 +345,7 @@ export default function LoginScreen() {
       } = await supabase.auth.getUser();
 
       if (verificationError || !verifiedUser) {
-        Alert.alert(
+        showNotice(
           "Session Expired",
           "Your saved session could not be verified. Please sign in again with your email and password.",
         );
@@ -360,7 +355,7 @@ export default function LoginScreen() {
       // 4. Recheck the user's role and approval status.
       await verifyAccountAndNavigate(verifiedUser, { requireEmailCode: false });
     } catch {
-      Alert.alert(
+      showNotice(
         "Biometric Login Error",
         "Unable to complete verification. Please try again or use your StudyMate password.",
       );

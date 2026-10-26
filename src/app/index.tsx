@@ -22,7 +22,7 @@ export default function Index() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#064E2B" />
+      <StatusBar barStyle="light-content" />
 
       <View style={styles.glow} />
 

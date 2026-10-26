@@ -141,6 +141,23 @@ function difficultyLabel(value: Difficulty) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+// Drop blank answer slots and keep the selected correct answer pointing at the
+// same text after the remaining options move up.
+function normalizeOptions(question: QuestionDraft) {
+  const filled = question.options
+    .map((text, index) => ({ text: text.trim(), index }))
+    .filter((entry) => entry.text.length > 0);
+
+  const correctPosition = filled.findIndex(
+    (entry) => entry.index === question.correctIndex,
+  );
+
+  return {
+    options: filled.map((entry) => entry.text),
+    correctIndex: correctPosition >= 0 ? correctPosition : 0,
+  };
+}
+
 export default function TeacherQuizzesScreen() {
   const [items, setItems] = useState<QuizRow[] | null>(null);
   const [questionCounts, setQuestionCounts] = useState<Record<string, number>>(
@@ -269,9 +286,16 @@ export default function TeacherQuizzesScreen() {
 
     const loadMaterialOptions = async () => {
       try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!active || !user) return;
+
         const { data, error } = await supabase
           .from("materials")
           .select("id, title, subject, topic")
+          .eq("teacher_id", user.id)
           .order("created_at", { ascending: false })
           .limit(30);
 
@@ -690,14 +714,18 @@ export default function TeacherQuizzesScreen() {
 
       if (!quizId) throw new Error("The quiz could not be saved.");
 
-      const questionPayload = questions.map((question, index) => ({
-        quiz_id: quizId,
-        position: index + 1,
-        prompt: question.prompt.trim(),
-        options: question.options.map((option) => option.trim()),
-        correct_index: question.correctIndex,
-        explanation: question.explanation.trim(),
-      }));
+      const questionPayload = questions.map((question, index) => {
+        const normalized = normalizeOptions(question);
+
+        return {
+          quiz_id: quizId,
+          position: index + 1,
+          prompt: question.prompt.trim(),
+          options: normalized.options,
+          correct_index: normalized.correctIndex,
+          explanation: question.explanation.trim(),
+        };
+      });
 
       // Insert the new set before removing the old rows so a failed insert
       // cannot leave the quiz with zero questions.

@@ -56,7 +56,7 @@ export default function StudentTabLayout() {
             <Ionicons
               name={focused ? "home" : "home-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}
@@ -70,7 +70,7 @@ export default function StudentTabLayout() {
             <Ionicons
               name={focused ? "book" : "book-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}
@@ -84,7 +84,7 @@ export default function StudentTabLayout() {
             <Ionicons
               name={focused ? "chatbubbles" : "chatbubbles-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}
@@ -98,7 +98,7 @@ export default function StudentTabLayout() {
             <Ionicons
               name={focused ? "clipboard" : "clipboard-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}
@@ -119,7 +119,7 @@ export default function StudentTabLayout() {
             <Ionicons
               name={focused ? "person" : "person-outline"}
               size={size}
-              color={color}
+              color={color == null || typeof color === "number" ? undefined : color}
             />
           ),
         }}

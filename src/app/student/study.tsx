@@ -1,3 +1,4 @@
+import { MaterialReader } from "@/components/material-reader";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
@@ -23,9 +24,10 @@ type Material = {
   id: string;
   title: string;
   subject: string;
-  topic: string;
-  description: string;
+  topic: string | null;
+  description: string | null;
   created_at: string;
+  content?: string | null;
 };
 
 type LoadMode = "initial" | "refresh";
@@ -51,6 +53,9 @@ export default function StudentStudyScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tableMissing, setTableMissing] = useState(false);
   const [search, setSearch] = useState("");
+  const [readerMaterial, setReaderMaterial] = useState<Material | null>(null);
+  const [readerVisible, setReaderVisible] = useState(false);
+  const [readerLoading, setReaderLoading] = useState(false);
 
   const loadMaterials = useCallback(async (mode: LoadMode) => {
     if (mode === "refresh") setRefreshing(true);
@@ -129,6 +134,75 @@ export default function StudentStudyScreen() {
     setLoadError(null);
     void loadMaterials("initial");
   };
+
+  const closeReader = useCallback(() => {
+    setReaderVisible(false);
+    setReaderLoading(false);
+  }, []);
+
+  // The list only carries summary fields, so the full lesson text is fetched
+  // when a student opens a material.
+  const openMaterial = useCallback(
+    async (item: Material) => {
+      setReaderMaterial({ ...item, content: "" });
+      setReaderVisible(true);
+      setReaderLoading(true);
+
+      try {
+        const { data, error } = await supabase
+          .from("materials")
+          .select("id, title, subject, topic, description, content, created_at")
+          .eq("id", item.id)
+          .eq("status", "published")
+          .maybeSingle();
+
+        let row: Record<string, unknown> | null = data;
+
+        if (error) {
+          // ai_grounding.sql adds materials.content. Until it runs, open the
+          // lesson with its description instead of failing outright.
+          const { data: fallback, error: fallbackError } = await supabase
+            .from("materials")
+            .select("id, title, subject, topic, description, created_at")
+            .eq("id", item.id)
+            .eq("status", "published")
+            .maybeSingle();
+
+          if (fallbackError) throw new Error(fallbackError.message);
+          row = fallback;
+        }
+
+        if (!row) {
+          closeReader();
+          showNotice(
+            "Material unavailable",
+            "This material is no longer published. Pull down to refresh the library.",
+          );
+          return;
+        }
+
+        setReaderMaterial({
+          id: String(row.id),
+          title: String(row.title ?? ""),
+          subject: String(row.subject ?? ""),
+          topic: typeof row.topic === "string" ? row.topic : null,
+          description:
+            typeof row.description === "string" ? row.description : null,
+          created_at: String(row.created_at ?? ""),
+          content: typeof row.content === "string" ? row.content : "",
+        });
+      } catch (err) {
+        closeReader();
+        showNotice(
+          "Unable to open material",
+          err instanceof Error ? err.message : "Please try again.",
+        );
+      } finally {
+        setReaderLoading(false);
+      }
+    },
+    [closeReader],
+  );
 
   if (loading && items === null) {
     return (
@@ -234,7 +308,14 @@ export default function StudentStudyScreen() {
           </View>
         }
         renderItem={({ item }) => (
-          <View style={styles.card}>
+          <Pressable
+            onPress={() => {
+              void openMaterial(item);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={`Open lesson: ${item.title}`}
+            style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+          >
             <View style={styles.cardTop}>
               <View style={styles.cardIcon}>
                 <Ionicons name="document-text-outline" size={20} color={GREEN} />
@@ -249,13 +330,29 @@ export default function StudentStudyScreen() {
                   {item.topic ? ` · ${item.topic}` : ""}
                 </Text>
               </View>
+
+              <Ionicons name="chevron-forward" size={18} color="#9AA69E" />
             </View>
 
             {item.description ? (
-              <Text style={styles.cardDescription}>{item.description}</Text>
+              <Text style={styles.cardDescription} numberOfLines={3}>
+                {item.description}
+              </Text>
             ) : null}
-          </View>
+
+            <View style={styles.cardAction}>
+              <Text style={styles.cardActionText}>Read lesson</Text>
+              <Ionicons name="book-outline" size={14} color={GREEN} />
+            </View>
+          </Pressable>
         )}
+      />
+
+      <MaterialReader
+        material={readerMaterial}
+        visible={readerVisible}
+        loading={readerLoading}
+        onClose={closeReader}
       />
     </SafeAreaView>
   );
@@ -362,4 +459,11 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: "#758479",
   },
+  cardAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 2,
+  },
+  cardActionText: { fontSize: 12, fontWeight: "700", color: GREEN },
 });

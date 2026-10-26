@@ -1,11 +1,11 @@
 import { supabase } from "@/lib/supabase";
+import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
     ActivityIndicator,
-    Alert,
     Image,
     KeyboardAvoidingView,
     Platform,
@@ -144,7 +144,7 @@ export default function AdminAccountScreen() {
         data.role !== "admin" ||
         data.approval_status !== "approved"
       ) {
-        Alert.alert(
+        showNotice(
           "Access denied",
           "Only approved administrators can access this profile.",
         );
@@ -174,7 +174,7 @@ export default function AdminAccountScreen() {
     } catch (error) {
       console.error("Unable to load admin profile:", error);
 
-      Alert.alert(
+      showNotice(
         "Profile Error",
         error instanceof Error
           ? error.message
@@ -201,7 +201,7 @@ export default function AdminAccountScreen() {
         await ImagePicker.requestMediaLibraryPermissionsAsync();
 
       if (!permission.granted) {
-        Alert.alert(
+        showNotice(
           "Photo Permission Required",
           "Allow StudyMate AI to access your photo library to choose a profile picture.",
         );
@@ -221,7 +221,7 @@ export default function AdminAccountScreen() {
       const photo = result.assets[0];
 
       if (!photo.base64) {
-        Alert.alert(
+        showNotice(
           "Photo Error",
           "Expo could not read the selected photo. Please select another image.",
         );
@@ -231,7 +231,7 @@ export default function AdminAccountScreen() {
       const mimeType = photo.mimeType?.toLowerCase() ?? "image/jpeg";
 
       if (!ALLOWED_TYPES.includes(mimeType)) {
-        Alert.alert(
+        showNotice(
           "Unsupported Image",
           "Please select a JPG, PNG, or WebP image.",
         );
@@ -249,7 +249,7 @@ export default function AdminAccountScreen() {
     } catch (error) {
       console.error("Photo picker error:", error);
 
-      Alert.alert(
+      showNotice(
         "Photo Error",
         error instanceof Error
           ? error.message
@@ -262,7 +262,7 @@ export default function AdminAccountScreen() {
     const trimmedName = fullName.trim();
 
     if (!trimmedName) {
-      Alert.alert("Name Required", "Please enter your full name.");
+      showNotice("Name Required", "Please enter your full name.");
       return;
     }
 
@@ -376,11 +376,11 @@ export default function AdminAccountScreen() {
         setAvatarImageFailed(false);
       }
 
-      Alert.alert("Profile Updated", "Your profile changes have been saved.");
+      showNotice("Profile Updated", "Your profile changes have been saved.");
     } catch (error) {
       console.error("Unable to save admin profile:", error);
 
-      Alert.alert(
+      showNotice(
         "Save Failed",
         error instanceof Error
           ? error.message
