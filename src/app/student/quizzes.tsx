@@ -288,7 +288,7 @@ export default function StudentQuizzesScreen() {
     }
 
     router.push({
-      pathname: "/student/quiz-attempt",
+      pathname: "/student/quiz-attempt" as never,
       params: { quizId: item.id },
     });
   };
@@ -386,18 +386,14 @@ export default function StudentQuizzesScreen() {
 
             <Pressable
               onPress={() => {
-                try {
-                  router.push("/student/practice-select-material" as never);
-                } catch {
-                  router.navigate("/student/practice-select-material" as never);
-                }
+                router.push("/student/ai-buddy" as never);
               }}
               accessibilityRole="button"
               style={styles.practiceCta}
             >
               <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
               <Text style={styles.practiceCtaText}>
-                Generate Practice Quiz from Material
+                Generate Practice Quiz with AI Buddy
               </Text>
             </Pressable>
 

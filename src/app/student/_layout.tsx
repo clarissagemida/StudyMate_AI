@@ -117,6 +117,8 @@ export default function StudentTabLayout() {
       />
 
       <Tabs.Screen name="practice-generate" options={{ href: null }} />
+      <Tabs.Screen name="practice-select-material" options={{ href: null }} />
+      <Tabs.Screen name="practice-config" options={{ href: null }} />
       <Tabs.Screen name="practice-take" options={{ href: null }} />
       <Tabs.Screen name="practice-results" options={{ href: null }} />
       <Tabs.Screen name="practice-history" options={{ href: null }} />

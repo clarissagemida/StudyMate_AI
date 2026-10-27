@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRequireRole } from "@/hooks/useRequireRole";
 
 const GREEN = "#176B45";
 const DARK_GREEN = "#123D2A";
@@ -164,6 +165,7 @@ ${lines.join("\n\n")}`.slice(0, 1900);
 }
 
 export default function QuizAttemptScreen() {
+  const guardState = useRequireRole("student");
   const params = useLocalSearchParams<{ quizId?: string }>();
   const quizId = typeof params.quizId === "string" ? params.quizId : "";
 
@@ -276,12 +278,13 @@ export default function QuizAttemptScreen() {
   }, [quizId]);
 
   useEffect(() => {
-    const run = async () => {
-      await loadQuiz();
-    };
-
-    void run();
-  }, [loadQuiz]);
+    if (guardState === "allowed") {
+      const run = async () => {
+        await loadQuiz();
+      };
+      void run();
+    }
+  }, [guardState, loadQuiz]);
 
   const total = questions.length;
   const answeredCount = Object.keys(selections).length;
