@@ -1,16 +1,16 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -45,12 +45,26 @@ type SettingsState = {
   embeddingModel: string;
 };
 
+const CHAT_MODEL_OPTIONS = [
+  { label: "Gemini 2.5 Flash", value: "gemini-2.5-flash" },
+  { label: "Gemini 2.5 Flash-Lite", value: "gemini-2.5-flash-lite" },
+  { label: "Gemini 2.5 Pro", value: "gemini-2.5-pro" },
+  { label: "Gemini 2.0 Flash", value: "gemini-2.0-flash" },
+  { label: "Gemini 2.0 Flash-Lite", value: "gemini-2.0-flash-lite" },
+] as const;
+
+const EMBEDDING_MODEL_OPTIONS = [
+  { label: "Gemini Embedding 001", value: "gemini-embedding-001" },
+  { label: "Text Embedding 004", value: "text-embedding-004" },
+  { label: "Gemini Embedding 2", value: "gemini-embedding-2" },
+] as const;
+
 const DEFAULT_SETTINGS: SettingsState = {
   enabled: true,
   studentEnabled: true,
   teacherEnabled: true,
-  model: "gemini-3.8-flash",
-  embeddingModel: "gemini-embedding-2",
+  model: "gemini-2.5-flash",
+  embeddingModel: "gemini-embedding-001",
 };
 
 const FEATURE_LABELS: Record<string, string> = {
@@ -109,6 +123,8 @@ export default function AdminAiScreen() {
   const [busySetting, setBusySetting] = useState<string | null>(null);
   const [busyReport, setBusyReport] = useState<string | null>(null);
   const [adminId, setAdminId] = useState("");
+  const [chatPickerOpen, setChatPickerOpen] = useState(false);
+  const [embedPickerOpen, setEmbedPickerOpen] = useState(false);
 
   const load = useCallback(async (mode: "initial" | "refresh") => {
     if (mode === "refresh") setRefreshing(true);
@@ -340,7 +356,11 @@ export default function AdminAiScreen() {
   if (loading) {
     return (
       <SafeAreaView style={styles.center} edges={["bottom"]}>
-        <ActivityIndicator size="large" color={GREEN} />
+        <ProgressIndicator
+          size="lg"
+          color={GREEN}
+          accessibilityLabel="Loading AI controls"
+        />
         <Text style={styles.centerText}>Loading AI controls...</Text>
       </SafeAreaView>
     );
@@ -368,6 +388,12 @@ export default function AdminAiScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing AI controls"
+        />
+      ) : null}
       <ScrollView
         contentContainerStyle={styles.container}
         showsVerticalScrollIndicator={false}
@@ -377,8 +403,9 @@ export default function AdminAiScreen() {
             onRefresh={() => {
               void load("refresh");
             }}
-            tintColor={GREEN}
-            colors={[GREEN]}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
           />
         }
       >
@@ -523,56 +550,127 @@ export default function AdminAiScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Models</Text>
+          <Text style={styles.cardTitle}>AI Models</Text>
           <Text style={styles.cardHint}>
-            Use Gemini model ids without a models/ prefix. Save only after the
-            new model is available to your API key.
+            Select the Gemini models used across AI Buddy, Teacher AI, and Student Practice.
           </Text>
 
-          <Text style={styles.inputLabel}>Chat model</Text>
-          <TextInput
-            value={modelDraft}
-            onChangeText={setModelDraft}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder={DEFAULT_SETTINGS.model}
-            placeholderTextColor="#9AA69E"
-            style={styles.input}
-            accessibilityLabel="AI chat model"
-          />
+          <Text style={styles.inputLabel}>Chat / Generation Model</Text>
+          <Pressable
+            onPress={() => setChatPickerOpen(true)}
+            disabled={setupMissing}
+            style={[styles.select, setupMissing && styles.disabled]}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.selectText}>
+                {CHAT_MODEL_OPTIONS.find((o) => o.value === modelDraft)?.label || modelDraft}
+              </Text>
+              <Text style={styles.selectSubText}>{modelDraft}</Text>
+            </View>
+            <Ionicons name="chevron-down" size={18} color="#6B7F72" />
+          </Pressable>
 
-          <Text style={styles.inputLabel}>Embedding model</Text>
-          <TextInput
-            value={embeddingDraft}
-            onChangeText={setEmbeddingDraft}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder={DEFAULT_SETTINGS.embeddingModel}
-            placeholderTextColor="#9AA69E"
-            style={styles.input}
-            accessibilityLabel="AI embedding model"
-          />
+          <Text style={styles.inputLabel}>Embedding Model</Text>
+          <Pressable
+            onPress={() => setEmbedPickerOpen(true)}
+            disabled={setupMissing}
+            style={[styles.select, setupMissing && styles.disabled]}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.selectText}>
+                {EMBEDDING_MODEL_OPTIONS.find((o) => o.value === embeddingDraft)?.label || embeddingDraft}
+              </Text>
+              <Text style={styles.selectSubText}>{embeddingDraft}</Text>
+            </View>
+            <Ionicons name="chevron-down" size={18} color="#6B7F72" />
+          </Pressable>
 
           <Pressable
             onPress={() => void saveModels()}
-            disabled={savingModels || setupMissing}
+            disabled={savingModels || setupMissing || (modelDraft === settings.model && embeddingDraft === settings.embeddingModel)}
             accessibilityRole="button"
             style={({ pressed }) => [
               styles.primaryButton,
-              (savingModels || setupMissing) && styles.disabled,
+              (savingModels || setupMissing || (modelDraft === settings.model && embeddingDraft === settings.embeddingModel)) && styles.disabled,
               pressed && styles.pressed,
             ]}
           >
             {savingModels ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
+              <ProgressIndicator
+                size="sm"
+                color="#FFFFFF"
+                accessibilityLabel="Saving AI models"
+              />
             ) : (
               <>
                 <Ionicons name="save-outline" size={16} color="#FFFFFF" />
-                <Text style={styles.primaryButtonText}>Save models</Text>
+                <Text style={styles.primaryButtonText}>Apply Changes</Text>
               </>
             )}
           </Pressable>
         </View>
+
+        <Modal visible={chatPickerOpen} transparent animationType="fade" onRequestClose={() => setChatPickerOpen(false)}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setChatPickerOpen(false)} />
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Chat/Generation Model</Text>
+              <Pressable onPress={() => setChatPickerOpen(false)}>
+                <Ionicons name="close" size={22} color="#123D2A" />
+              </Pressable>
+            </View>
+            {CHAT_MODEL_OPTIONS.map((opt) => {
+              const active = modelDraft === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => {
+                    setModelDraft(opt.value);
+                    setChatPickerOpen(false);
+                  }}
+                  style={styles.modalItem}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalItemTitle}>{opt.label}</Text>
+                    <Text style={styles.modalItemSub}>{opt.value}</Text>
+                  </View>
+                  {active ? <Ionicons name="checkmark" size={20} color={GREEN} /> : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        </Modal>
+
+        <Modal visible={embedPickerOpen} transparent animationType="fade" onRequestClose={() => setEmbedPickerOpen(false)}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setEmbedPickerOpen(false)} />
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Embedding Model</Text>
+              <Pressable onPress={() => setEmbedPickerOpen(false)}>
+                <Ionicons name="close" size={22} color="#123D2A" />
+              </Pressable>
+            </View>
+            {EMBEDDING_MODEL_OPTIONS.map((opt) => {
+              const active = embeddingDraft === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => {
+                    setEmbeddingDraft(opt.value);
+                    setEmbedPickerOpen(false);
+                  }}
+                  style={styles.modalItem}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalItemTitle}>{opt.label}</Text>
+                    <Text style={styles.modalItemSub}>{opt.value}</Text>
+                  </View>
+                  {active ? <Ionicons name="checkmark" size={20} color={GREEN} /> : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        </Modal>
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Today by feature</Text>
@@ -665,6 +763,15 @@ export default function AdminAiScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
+  },
   container: { padding: 20, paddingBottom: 40, gap: 16 },
   center: {
     flex: 1,
@@ -814,6 +921,55 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   primaryButtonText: { fontSize: 13, fontWeight: "800", color: "#FFFFFF" },
+  select: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minHeight: 52,
+    borderWidth: 1,
+    borderColor: "#DDE7E0",
+    backgroundColor: "#F7FAF8",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+  },
+  selectText: { fontSize: 14, fontWeight: "700", color: "#20392B" },
+  selectSubText: { fontSize: 11, color: "#7A897F", marginTop: 2 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(16, 77, 51, 0.25)",
+  },
+  modalSheet: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 24,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E5EDE7",
+    overflow: "hidden",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#EDF2EE",
+  },
+  modalTitle: { fontSize: 15, fontWeight: "800", color: "#123D2A" },
+  modalItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F5F8F6",
+  },
+  modalItemTitle: { fontSize: 14, fontWeight: "700", color: "#20392B" },
+  modalItemSub: { fontSize: 11, color: "#7A897F", marginTop: 2 },
   emptyText: { fontSize: 12, color: "#7A897F", lineHeight: 18 },
   featureRow: {
     flexDirection: "row",

@@ -89,7 +89,7 @@ export async function generateTeacherAi(
       questionCount: request.questionCount,
       materialId: request.materialId || undefined,
     },
-    { timeoutMs: 90000 },
+    { timeoutMs: request.mode === "quiz" ? 150000 : 60000 },
   );
 
   if (!result.ok) {

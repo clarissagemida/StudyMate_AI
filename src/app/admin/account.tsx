@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
@@ -5,7 +6,6 @@ import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-    ActivityIndicator,
     Image,
     KeyboardAvoidingView,
     Platform,
@@ -401,7 +401,11 @@ export default function AdminAccountScreen() {
   if (loading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#16794A" />
+        <ProgressIndicator
+          size="lg"
+          color="#16794A"
+          accessibilityLabel="Loading your profile"
+        />
         <Text style={styles.loadingText}>Loading your profile...</Text>
       </SafeAreaView>
     );
@@ -610,7 +614,11 @@ export default function AdminAccountScreen() {
                 disabled={saving}
               >
                 {saving ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <ProgressIndicator
+                    size="sm"
+                    color="#FFFFFF"
+                    accessibilityLabel="Saving profile changes"
+                  />
                 ) : (
                   <Ionicons
                     name="checkmark-circle-outline"

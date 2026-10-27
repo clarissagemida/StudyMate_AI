@@ -43,21 +43,54 @@ function failure(
   return { ok: false, code, message, resetAt };
 }
 
+type ResponseLike = {
+  status?: number;
+  clone?: () => ResponseLike;
+  json?: () => Promise<unknown>;
+  text?: () => Promise<string>;
+};
+
 async function readServerError(context: unknown): Promise<{
   body: ServerError | null;
   status?: number;
 }> {
-  if (!(context instanceof Response)) return { body: null };
+  if (!context || typeof context !== "object") return { body: null };
 
+  const response = context as ResponseLike;
   let body: ServerError | null = null;
 
   try {
-    body = (await context.clone().json()) as ServerError;
+    const payload = await (response.clone?.() ?? response).json?.();
+
+    if (payload && typeof payload === "object") {
+      const candidate = payload as ServerError;
+      body = {
+        error: typeof candidate.error === "string" ? candidate.error : undefined,
+        message:
+          typeof candidate.message === "string" ? candidate.message : undefined,
+        status:
+          typeof candidate.status === "string" ? candidate.status : undefined,
+        resetAt:
+          typeof candidate.resetAt === "string" ? candidate.resetAt : undefined,
+      };
+    }
   } catch {
     body = null;
   }
 
-  return { body, status: context.status };
+  if (!body?.error && !body?.message && typeof response.text === "function") {
+    try {
+      const text = (await response.text()).trim();
+
+      if (text) {
+        body = { message: text.slice(0, 300) };
+      }
+    } catch {
+      body = null;
+    }
+  }
+
+  return { body, status: response.status };
 }
 
 export async function invokeAi<T>(
@@ -95,7 +128,14 @@ export async function invokeAi<T>(
       }
 
       if (status === 429 || parsed?.resetAt) {
-        return failure("quota", message, parsed?.resetAt);
+        return failure(
+          "quota",
+          message.toLowerCase().includes("usage limit") ||
+            message.toLowerCase().includes("reached today's")
+            ? "Daily AI limit reached. Try again after midnight UTC."
+            : message,
+          parsed?.resetAt,
+        );
       }
 
       if (status === 401 || status === 403) {

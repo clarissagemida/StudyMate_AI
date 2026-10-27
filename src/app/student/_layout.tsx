@@ -1,7 +1,8 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { useRequireRole } from "@/hooks/useRequireRole";
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
 const GREEN = "#176B45";
 const INACTIVE = "#8A978F";
@@ -15,7 +16,11 @@ export default function StudentTabLayout() {
   if (guard === "checking") {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color={GREEN} />
+        <ProgressIndicator
+          size="lg"
+          color={GREEN}
+          accessibilityLabel="Verifying your account"
+        />
         <Text style={styles.centerText}>Verifying your account...</Text>
       </View>
     );
@@ -110,6 +115,11 @@ export default function StudentTabLayout() {
           href: null,
         }}
       />
+
+      <Tabs.Screen name="practice-generate" options={{ href: null }} />
+      <Tabs.Screen name="practice-take" options={{ href: null }} />
+      <Tabs.Screen name="practice-results" options={{ href: null }} />
+      <Tabs.Screen name="practice-history" options={{ href: null }} />
 
       <Tabs.Screen
         name="profile"

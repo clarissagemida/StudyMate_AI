@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { SectionHeader } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
@@ -39,6 +40,7 @@ type DashboardData = {
   materials: MaterialRow[] | null;
   quizzes: number | null;
   publishedQuizzes: number | null;
+  students: number | null;
 };
 
 type LoadMode = "initial" | "refresh";
@@ -49,11 +51,19 @@ function isMissingRelation(
   error: { code?: string; message?: string } | null,
 ): boolean {
   if (!error) return false;
-  if (error.code === "PGRST205" || error.code === "42P01") return true;
+  if (
+    error.code === "PGRST202" ||
+    error.code === "PGRST205" ||
+    error.code === "42883" ||
+    error.code === "42P01"
+  ) {
+    return true;
+  }
 
   const message = (error.message ?? "").toLowerCase();
   return (
     message.includes("could not find the table") ||
+    message.includes("could not find the function") ||
     message.includes("does not exist")
   );
 }
@@ -149,12 +159,25 @@ export default function TeacherDashboardScreen() {
         publishedQuizzes = quizPublished ?? 0;
       }
 
+      // Students who attempted this teacher's quizzes. Without the analytics
+      // RPC the dashboard shows "—" rather than a guessed count.
+      let students: number | null = null;
+      const { data: studentRows, error: studentsError } = await supabase.rpc(
+        "teacher_students",
+      );
+
+      if (!isMissingRelation(studentsError)) {
+        if (studentsError) throw new Error(studentsError.message);
+        students = Array.isArray(studentRows) ? studentRows.length : 0;
+      }
+
       setData({
         fullName: profile?.full_name?.trim() || "Teacher",
         avatarUrl,
         materials,
         quizzes,
         publishedQuizzes,
+        students,
       });
       setError(null);
     } catch (err) {
@@ -213,11 +236,19 @@ export default function TeacherDashboardScreen() {
   const materials = data?.materials ?? null;
   const quizzes = data?.quizzes ?? null;
   const publishedQuizzes = data?.publishedQuizzes ?? null;
+  const students = data?.students ?? null;
   const recentMaterials = materials ? materials.slice(0, 4) : [];
-  const tablesMissing = materials === null || quizzes === null;
+  const tablesMissing =
+    materials === null || quizzes === null || students === null;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing teacher dashboard"
+        />
+      ) : null}
       <ScrollView
         contentContainerStyle={styles.container}
         showsVerticalScrollIndicator={false}
@@ -227,8 +258,9 @@ export default function TeacherDashboardScreen() {
             onRefresh={() => {
               void loadDashboard("refresh");
             }}
-            tintColor={GREEN}
-            colors={[GREEN]}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
           />
         }
       >
@@ -289,17 +321,25 @@ export default function TeacherDashboardScreen() {
             </Text>
             <Text style={styles.statLabel}>Published</Text>
           </Card>
+
+          <Card style={styles.statCard}>
+            <View style={styles.statIcon}>
+              <Ionicons name="people-outline" size={20} color={GREEN} />
+            </View>
+            <Text style={styles.statValue}>
+              {students === null ? "—" : students}
+            </Text>
+            <Text style={styles.statLabel}>Students</Text>
+          </Card>
         </View>
 
         {tablesMissing && (
           <View style={styles.notice}>
             <Ionicons name="information-circle-outline" size={18} color={GREEN} />
             <Text style={styles.noticeText}>
-              {materials === null && quizzes === null
-                ? "Statistics appear once the materials and quiz tables are added to Supabase (run the SQL files in the supabase/ folder)."
-                : materials === null
-                  ? "The learning materials table is not set up yet. Run supabase/materials.sql in the Supabase SQL editor to enable material statistics."
-                  : "The quiz tables are not set up yet. Run supabase/quizzes.sql in the Supabase SQL editor to enable quiz statistics."}
+              Some statistics are unavailable because their Supabase setup is
+              missing. Run the SQL files in the supabase/ folder, then reload
+              this dashboard.
             </Text>
           </View>
         )}
@@ -333,13 +373,33 @@ export default function TeacherDashboardScreen() {
           <View style={styles.primaryActionText}>
             <Text style={styles.pendingActionTitle}>Create a quiz</Text>
             <Text style={styles.pendingActionSubtitle}>
-              Add multiple-choice questions and publish them to students
+              Draft with AI or add multiple-choice and true/false questions
             </Text>
           </View>
           <Pressable
             onPress={() => router.push("/teacher/quizzes")}
             accessibilityRole="button"
             accessibilityLabel="Open quizzes"
+            hitSlop={6}
+          >
+            <Ionicons name="chevron-forward" size={20} color={GREEN} />
+          </Pressable>
+        </View>
+
+        <View style={styles.pendingAction}>
+          <View style={styles.pendingActionIcon}>
+            <Ionicons name="people-outline" size={22} color={GREEN} />
+          </View>
+          <View style={styles.primaryActionText}>
+            <Text style={styles.pendingActionTitle}>Student progress</Text>
+            <Text style={styles.pendingActionSubtitle}>
+              Review attempts and average scores from your quizzes
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => router.push("/teacher/students")}
+            accessibilityRole="button"
+            accessibilityLabel="Open student progress"
             hitSlop={6}
           >
             <Ionicons name="chevron-forward" size={20} color={GREEN} />
@@ -416,6 +476,15 @@ export default function TeacherDashboardScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
+  },
   container: { padding: spacing.xl, paddingBottom: spacing.xxxl + 8, gap: spacing.md },
   pressed: { opacity: 0.9 },
   welcomeCard: {
@@ -455,9 +524,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   avatarImage: { width: "100%", height: "100%" },
-  statsRow: { flexDirection: "row", gap: spacing.sm + 2 },
+  statsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm + 2 },
   statCard: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: "45%",
     padding: spacing.md + 2,
     alignItems: "flex-start",
   },

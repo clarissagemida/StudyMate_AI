@@ -2,7 +2,10 @@ import {
   authenticate,
   requireApprovedRole,
 } from "../_shared/auth.ts";
-import { callGemini } from "../_shared/gemini.ts";
+import {
+  callGemini,
+  DEFAULT_GEMINI_FALLBACK_MODEL,
+} from "../_shared/gemini.ts";
 import { handlePreflight, json, readJsonBody } from "../_shared/http.ts";
 import { loadAiSettings } from "../_shared/settings.ts";
 import {
@@ -10,6 +13,7 @@ import {
   recordUsage,
 } from "../_shared/usage.ts";
 import {
+  MAX_QUIZ_QUESTIONS,
   QUIZ_RESPONSE_SCHEMA,
   trimString,
   validateGeneratedQuestions,
@@ -20,7 +24,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 
-const MAX_MATERIAL_CHARS = 6000;
+const MAX_MATERIAL_CHARS = 10000;
 
 const TEACHER_SYSTEM_PROMPT = `
 You are a teaching assistant helping an approved teacher prepare draft
@@ -124,7 +128,7 @@ Deno.serve(async (req: Request) => {
   const topic = trimString(body.topic, 300);
   const difficulty = trimString(body.difficulty, 20) || "medium";
   const materialId = trimString(body.materialId, 64);
-  const requestedCount = Number(body.questionCount ?? 5);
+  const requestedCount = Number(body.questionCount ?? 10);
 
   if (mode !== "topic" && mode !== "quiz") {
     return json({ error: "Mode must be topic or quiz." }, 400);
@@ -140,7 +144,10 @@ Deno.serve(async (req: Request) => {
 
   const questionCount = Math.max(
     1,
-    Math.min(10, Math.floor(requestedCount || 5)),
+    Math.min(
+      MAX_QUIZ_QUESTIONS,
+      Math.floor(requestedCount || 10),
+    ),
   );
 
   const quota = await checkDailyQuota(
@@ -231,21 +238,31 @@ Use accurate, student-friendly language. Format the result clearly.`
 ${basePrompt}
 Number of questions: ${questionCount}
 
-Create exactly ${questionCount} multiple-choice questions.
-Every question must have exactly four options, one correct answer, and a short
-explanation. Use accurate content and plausible distractors. Return JSON that
+Create exactly ${questionCount} multiple-choice questions. Do not omit any or
+stop early. Every question must have exactly four options, one correct answer,
+and a short explanation. Use accurate content and plausible distractors. Keep
+questions distinct and avoid repeating the same concept. Return JSON that
 matches the provided schema.`;
+
+  const quizMaxOutputTokens = Math.min(
+    32768,
+    4096 + questionCount * 800,
+  );
+  const quizTimeoutMs = Math.min(120000, 60000 + questionCount * 1500);
 
   const result = await callGemini({
     apiKey: GEMINI_API_KEY,
     model: settings.model,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     systemInstruction: TEACHER_SYSTEM_PROMPT,
-    maxOutputTokens: mode === "quiz" ? 8192 : 4096,
+    maxOutputTokens: mode === "quiz" ? quizMaxOutputTokens : 4096,
     thinkingLevel: "low",
     responseMimeType: mode === "quiz" ? "application/json" : undefined,
     responseSchema: mode === "quiz" ? QUIZ_RESPONSE_SCHEMA : undefined,
-    timeoutMs: 60000,
+    timeoutMs: mode === "quiz" ? quizTimeoutMs : 60000,
+    fallbackModel: DEFAULT_GEMINI_FALLBACK_MODEL,
+    maxAttempts: 4,
+    retryDelayMs: 800,
   });
 
   if (!result.ok) {

@@ -8,12 +8,22 @@ import {
 } from "../supabase/functions/_shared/chat.ts";
 import { chunkText } from "../supabase/functions/_shared/chunking.ts";
 import {
+  bytesToBase64,
+  extractPptxSlides,
+  MAX_MATERIAL_FILE_BYTES,
+  normalizeMaterialMime,
+  ooxmlXmlToText,
+  validateMaterialFile,
+} from "../supabase/functions/_shared/documents.ts";
+import {
   callGemini,
   classifyGeminiHttpError,
   embedText,
   parseGeminiPayload,
+  uploadGeminiFile,
 } from "../supabase/functions/_shared/gemini.ts";
 import {
+  MAX_QUIZ_QUESTIONS,
   validateGeneratedQuestions,
 } from "../supabase/functions/_shared/validation.ts";
 import { loadAiSettings } from "../supabase/functions/_shared/settings.ts";
@@ -101,6 +111,30 @@ test("validateGeneratedQuestions accepts a valid quiz", () => {
   assert.equal(result.ok, true);
   assert.equal(result.questions.length, 1);
   assert.equal(result.questions[0].correctIndex, 1);
+});
+
+test("validateGeneratedQuestions accepts up to the maximum question count", () => {
+  const makeQuestion = (index) => ({
+    prompt: `Question ${index + 1}`,
+    options: ["A", "B", "C", "D"],
+    correctIndex: index % 4,
+    explanation: "",
+  });
+
+  const atLimit = validateGeneratedQuestions({
+    questions: Array.from({ length: MAX_QUIZ_QUESTIONS }, (_, index) =>
+      makeQuestion(index)
+    ),
+  });
+  assert.equal(atLimit.ok, true);
+  assert.equal(atLimit.questions.length, MAX_QUIZ_QUESTIONS);
+
+  const overLimit = validateGeneratedQuestions({
+    questions: Array.from({ length: MAX_QUIZ_QUESTIONS + 1 }, (_, index) =>
+      makeQuestion(index)
+    ),
+  });
+  assert.equal(overLimit.ok, false);
 });
 
 test("validateGeneratedQuestions rejects bad answer keys and options", () => {
@@ -242,6 +276,107 @@ test("callGemini classifies HTTP 429", async () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.status, "rate_limited");
+});
+
+test("callGemini retries temporary 503 responses", async () => {
+  let calls = 0;
+
+  const result = await callGemini({
+    apiKey: "test-key",
+    model: "gemini-3.8-flash",
+    contents: [{ role: "user", parts: [{ text: "hi" }] }],
+    maxOutputTokens: 100,
+    retryDelayMs: 0,
+    fetchImpl: async () => {
+      calls += 1;
+
+      if (calls === 1) {
+        return new Response("busy", { status: 503 });
+      }
+
+      return jsonResponse({
+        candidates: [
+          { content: { parts: [{ text: "ok" }] }, finishReason: "STOP" },
+        ],
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "ok");
+  assert.equal(calls, 2);
+});
+
+test("callGemini falls back when the primary model stays unavailable", async () => {
+  const urls = [];
+
+  const result = await callGemini({
+    apiKey: "test-key",
+    model: "gemini-3.8-flash",
+    fallbackModel: "gemini-3.6-flash",
+    contents: [{ role: "user", parts: [{ text: "hi" }] }],
+    maxOutputTokens: 100,
+    maxAttempts: 1,
+    retryDelayMs: 0,
+    fetchImpl: async (url) => {
+      urls.push(String(url));
+
+      if (String(url).includes("gemini-3.8-flash")) {
+        return new Response("busy", { status: 503 });
+      }
+
+      return jsonResponse({
+        candidates: [
+          { content: { parts: [{ text: "fallback" }] }, finishReason: "STOP" },
+        ],
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "fallback");
+  assert.deepEqual(
+    urls.map((url) => url.split("/models/")[1].split(":")[0]),
+    ["gemini-3.8-flash", "gemini-3.6-flash"],
+  );
+});
+
+test("uploadGeminiFile sends resumable bytes and returns the file URI", async () => {
+  const calls = [];
+  const bytes = new Uint8Array([1, 2, 3]);
+  const fakeFetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+
+    if (calls.length === 1) {
+      return new Response("{}", {
+        status: 200,
+        headers: { "x-goog-upload-url": "https://upload.example/session" },
+      });
+    }
+
+    return jsonResponse({
+      file: {
+        name: "files/abc",
+        uri: "https://generativelanguage.googleapis.com/v1beta/files/abc",
+        state: "ACTIVE",
+      },
+    });
+  };
+
+  const result = await uploadGeminiFile({
+    apiKey: "test-key",
+    bytes,
+    mimeType: "application/pdf",
+    fetchImpl: fakeFetch,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.name, "files/abc");
+  assert.match(result.uri, /files\/abc$/);
+  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/upload/v1beta/files");
+  assert.equal(calls[0].init.headers["X-Goog-Upload-Header-Content-Length"], "3");
+  assert.equal(calls[1].url, "https://upload.example/session");
+  assert.equal(calls[1].init.body, bytes);
 });
 
 test("embedText uses task prefixes for embedding-2 queries", async () => {
@@ -431,4 +566,68 @@ test("checkDailyQuota blocks at the limit and allows admins", async () => {
   );
 
   assert.deepEqual(admin, { ok: true });
+});
+
+// ---------------------------------------------------------- material files
+
+test("material file validation accepts supported formats", () => {
+  const docx = validateMaterialFile({
+    name: "Lesson.DOCX",
+    mimeType: "application/octet-stream",
+    size: 1024,
+  });
+  assert.equal(docx.ok, true);
+  assert.match(docx.mimeType, /wordprocessingml/);
+
+  const pdf = normalizeMaterialMime("notes.pdf", "");
+  assert.equal(pdf, "application/pdf");
+
+  const tooBig = validateMaterialFile({
+    name: "notes.pdf",
+    mimeType: "application/pdf",
+    size: MAX_MATERIAL_FILE_BYTES + 1,
+  });
+  assert.equal(tooBig.ok, false);
+
+  const unsupported = validateMaterialFile({
+    name: "notes.xlsx",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    size: 100,
+  });
+  assert.equal(unsupported.ok, false);
+});
+
+test("OOXML text extraction keeps paragraphs and decodes entities", () => {
+  const xml =
+    "<w:document><w:body><w:p><w:r><w:t>Plants &amp; light</w:t></w:r></w:p>" +
+    "<w:p><w:r><w:t>Step 1</w:t></w:r><w:r><w:tab/><w:t>Step 2</w:t></w:r></w:p>" +
+    "</w:body></w:document>";
+
+  assert.equal(
+    ooxmlXmlToText(xml),
+    "Plants & light\n\nStep 1\tStep 2",
+  );
+});
+
+test("PPTX text extraction follows numeric slide order", () => {
+  const encoder = new TextEncoder();
+  const text =
+    "<p:sld><a:p><a:r><a:t>First slide</a:t></a:r></a:p></p:sld>";
+
+  const result = extractPptxSlides({
+    "ppt/slides/slide10.xml": encoder.encode(text.replace("First slide", "Tenth slide")),
+    "ppt/slides/slide2.xml": encoder.encode(text),
+  });
+
+  assert.ok(result.indexOf("Slide 1\nFirst slide") < result.indexOf("Slide 2\nTenth slide"));
+});
+
+test("bytesToBase64 handles chunks larger than the stack limit", () => {
+  const bytes = new Uint8Array(70000);
+  bytes.fill(65);
+
+  const encoded = bytesToBase64(bytes);
+
+  assert.equal(encoded.length, Math.ceil(bytes.length / 3) * 4);
+  assert.equal(Buffer.from(encoded, "base64").length, bytes.length);
 });

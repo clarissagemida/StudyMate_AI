@@ -1,10 +1,10 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   RefreshControl,
@@ -229,7 +229,11 @@ export default function AdminMaterialsScreen() {
   if (loading && items === null) {
     return (
       <SafeAreaView style={styles.center} edges={["top"]}>
-        <ActivityIndicator size="large" color={GREEN} />
+        <ProgressIndicator
+          size="lg"
+          color={GREEN}
+          accessibilityLabel="Loading learning materials"
+        />
         <Text style={styles.centerText}>Loading learning materials...</Text>
       </SafeAreaView>
     );
@@ -259,6 +263,12 @@ export default function AdminMaterialsScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing learning materials"
+        />
+      ) : null}
       <FlatList
         data={visibleItems}
         keyExtractor={(item) => item.id}
@@ -270,8 +280,9 @@ export default function AdminMaterialsScreen() {
             onRefresh={() => {
               void loadMaterials("refresh");
             }}
-            tintColor={GREEN}
-            colors={[GREEN]}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
           />
         }
         ListHeaderComponent={
@@ -463,6 +474,15 @@ export default function AdminMaterialsScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
+  },
   center: {
     flex: 1,
     backgroundColor: BG,

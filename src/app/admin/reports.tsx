@@ -1,8 +1,8 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -112,7 +112,11 @@ export default function AdminReportsScreen() {
 
         {loading ? (
           <View style={styles.centerBox}>
-            <ActivityIndicator size="large" color={GREEN} />
+            <ProgressIndicator
+              size="lg"
+              color={GREEN}
+              accessibilityLabel="Gathering statistics"
+            />
             <Text style={styles.centerText}>Gathering statistics...</Text>
           </View>
         ) : loadError ? (

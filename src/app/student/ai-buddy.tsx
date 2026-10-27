@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import {
   askStudyBuddy,
@@ -10,7 +11,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -432,7 +432,11 @@ export default function StudentAiBuddyScreen() {
                       ]}
                     >
                       {reportingId === item.id ? (
-                        <ActivityIndicator size="small" color="#809087" />
+                        <ProgressIndicator
+                          size="sm"
+                          color="#809087"
+                          accessibilityLabel="Reporting answer"
+                        />
                       ) : (
                         <>
                           <Ionicons
@@ -453,7 +457,11 @@ export default function StudentAiBuddyScreen() {
 
         {sending ? (
           <View style={styles.typingRow}>
-            <ActivityIndicator size="small" color={GREEN} />
+            <ProgressIndicator
+              size="sm"
+              color={GREEN}
+              accessibilityLabel="AI Buddy is thinking"
+            />
             <Text style={styles.typingText}>AI Buddy is thinking...</Text>
           </View>
         ) : null}

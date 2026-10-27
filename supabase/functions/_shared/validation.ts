@@ -9,6 +9,7 @@ export const MAX_QUESTION_PROMPT = 1000;
 export const MAX_QUESTION_EXPLANATION = 1000;
 export const MAX_OPTIONS = 6;
 export const MIN_OPTIONS = 2;
+export const MAX_QUIZ_QUESTIONS = 50;
 
 export const QUIZ_RESPONSE_SCHEMA = {
   type: "object",
@@ -16,7 +17,7 @@ export const QUIZ_RESPONSE_SCHEMA = {
     questions: {
       type: "array",
       minItems: 1,
-      maxItems: 10,
+      maxItems: MAX_QUIZ_QUESTIONS,
       items: {
         type: "object",
         properties: {
@@ -52,7 +53,7 @@ export function validateGeneratedQuestions(
     return { ok: false, message: "The AI did not return any questions." };
   }
 
-  if (raw.length > 10) {
+  if (raw.length > MAX_QUIZ_QUESTIONS) {
     return { ok: false, message: "The AI returned too many questions." };
   }
 

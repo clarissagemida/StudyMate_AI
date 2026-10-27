@@ -27,12 +27,20 @@ export type GeminiResult = GeminiSuccess | GeminiFailure;
 
 export type GeminiPart = {
   text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
+  fileData?: {
+    mimeType: string;
+    fileUri: string;
+  };
   thought?: boolean;
 };
 
 export type GeminiContent = {
   role: "user" | "model";
-  parts: { text: string }[];
+  parts: GeminiPart[];
 };
 
 export type GeminiSafetySetting = {
@@ -52,7 +60,14 @@ export type GeminiRequest = {
   safetySettings?: GeminiSafetySetting[];
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  fallbackModel?: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
 };
+
+export const DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
+
+const RETRYABLE_HTTP_STATUSES = new Set([408, 500, 502, 503, 504]);
 
 export const DEFAULT_SAFETY_SETTINGS: GeminiSafetySetting[] = [
   { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
@@ -113,7 +128,7 @@ export function classifyGeminiHttpError(
       ok: false,
       status: "rate_limited",
       httpStatus,
-      message: "The AI usage limit was reached. Please try again later.",
+      message: "AI service rate limit reached. Please try again in a moment.",
       detail,
     };
   }
@@ -166,92 +181,339 @@ export async function callGemini(request: GeminiRequest): Promise<GeminiResult> 
     generationConfig.responseSchema = request.responseSchema;
   }
 
+  const models = [request.model];
+
+  if (request.fallbackModel && request.fallbackModel !== request.model) {
+    models.push(request.fallbackModel);
+  }
+
+  const maxAttempts = Math.max(1, request.maxAttempts ?? 3);
+  const retryDelayMs = Math.max(0, request.retryDelayMs ?? 700);
+  const body = JSON.stringify({
+    system_instruction: request.systemInstruction
+      ? { parts: [{ text: request.systemInstruction }] }
+      : undefined,
+    contents: request.contents,
+    safetySettings: request.safetySettings ?? DEFAULT_SAFETY_SETTINGS,
+    generationConfig,
+  });
+
+  let lastFailure: GeminiFailure | null = null;
+
   try {
-    const response = await runner(
-      `https://generativelanguage.googleapis.com/v1beta/models/${request.model}:generateContent`,
+    for (const [modelIndex, model] of models.entries()) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          const response = await runner(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+            {
+              method: "POST",
+              signal: controller.signal,
+              headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": request.apiKey,
+              },
+              body,
+            },
+          );
+
+          if (!response.ok) {
+            const detail = (await response.text()).slice(0, 1000);
+            lastFailure = classifyGeminiHttpError(response.status, detail);
+
+            if (!RETRYABLE_HTTP_STATUSES.has(response.status)) {
+              return lastFailure;
+            }
+
+            if (attempt < maxAttempts - 1) {
+              await sleep(retryDelayMs * 2 ** attempt);
+              continue;
+            }
+
+            break;
+          }
+
+          const payload = (await response.json()) as GeminiPayload;
+          const parsed = parseGeminiPayload(payload);
+
+          if (!parsed.text) {
+            if (parsed.finishReason === "MAX_TOKENS") {
+              return {
+                ok: false,
+                status: "empty",
+                message:
+                  "The AI response was cut off before it could answer. Please try a shorter request.",
+                detail: parsed.finishReason,
+              };
+            }
+
+            if (
+              parsed.blockReason ||
+              parsed.finishReason === "SAFETY" ||
+              parsed.finishReason === "PROHIBITED_CONTENT"
+            ) {
+              return {
+                ok: false,
+                status: "empty",
+                message:
+                  "The AI could not answer that request. Please rephrase it.",
+                detail: parsed.blockReason ?? parsed.finishReason,
+              };
+            }
+
+            return {
+              ok: false,
+              status: "empty",
+              message:
+                "The AI returned no answer. Please try rephrasing your question.",
+              detail: parsed.finishReason,
+            };
+          }
+
+          return {
+            ok: true,
+            text: parsed.text,
+            finishReason: parsed.finishReason,
+            promptTokens: parsed.promptTokens,
+            outputTokens: parsed.outputTokens,
+          };
+        } catch (error) {
+          if (error instanceof Error && error.name === "AbortError") {
+            return {
+              ok: false,
+              status: "timeout",
+              message: "The AI took too long to answer. Please try again.",
+            };
+          }
+
+          lastFailure = {
+            ok: false,
+            status: "unavailable",
+            message: "Could not reach the AI service. Please try again.",
+            detail: error instanceof Error ? error.message : String(error),
+          };
+
+          if (attempt < maxAttempts - 1) {
+            await sleep(retryDelayMs * 2 ** attempt);
+            continue;
+          }
+
+          break;
+        }
+      }
+
+      if (modelIndex < models.length - 1) {
+        console.warn(
+          `Gemini model ${model} is unavailable; retrying with ${models[modelIndex + 1]}.`,
+        );
+      }
+    }
+
+    return (
+      lastFailure ?? {
+        ok: false,
+        status: "unavailable",
+        message: "The AI service is temporarily unavailable. Please try again.",
+      }
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export type GeminiFileUpload = {
+  ok: true;
+  name: string;
+  uri: string;
+};
+
+export type GeminiFileUploadFailure = {
+  ok: false;
+  status: GeminiFailureStatus;
+  message: string;
+  detail?: string;
+};
+
+type GeminiFilePayload = {
+  file?: {
+    name?: string;
+    uri?: string;
+    state?: string;
+  };
+};
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function uploadGeminiFile(options: {
+  apiKey: string;
+  bytes: Uint8Array;
+  mimeType: string;
+  displayName?: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<GeminiFileUpload | GeminiFileUploadFailure> {
+  const runner = options.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? 90000,
+  );
+
+  try {
+    const start = await runner(
+      "https://generativelanguage.googleapis.com/upload/v1beta/files",
       {
         method: "POST",
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
-          "x-goog-api-key": request.apiKey,
+          "x-goog-api-key": options.apiKey,
+          "X-Goog-Upload-Protocol": "resumable",
+          "X-Goog-Upload-Command": "start",
+          "X-Goog-Upload-Header-Content-Length": String(
+            options.bytes.byteLength,
+          ),
+          "X-Goog-Upload-Header-Content-Type": options.mimeType,
         },
         body: JSON.stringify({
-          system_instruction: request.systemInstruction
-            ? { parts: [{ text: request.systemInstruction }] }
-            : undefined,
-          contents: request.contents,
-          safetySettings:
-            request.safetySettings ?? DEFAULT_SAFETY_SETTINGS,
-          generationConfig,
+          file: {
+            display_name: options.displayName?.slice(0, 100) || "material",
+          },
         }),
       },
     );
 
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 1000);
-      return classifyGeminiHttpError(response.status, detail);
+    if (!start.ok) {
+      const detail = (await start.text()).slice(0, 1000);
+      return classifyGeminiHttpError(start.status, detail);
     }
 
-    const payload = (await response.json()) as GeminiPayload;
-    const parsed = parseGeminiPayload(payload);
+    const uploadUrl = start.headers.get("x-goog-upload-url");
 
-    if (!parsed.text) {
-      if (parsed.finishReason === "MAX_TOKENS") {
-        return {
-          ok: false,
-          status: "empty",
-          message:
-            "The AI response was cut off before it could answer. Please try a shorter request.",
-          detail: parsed.finishReason,
-        };
-      }
-
-      if (
-        parsed.blockReason ||
-        parsed.finishReason === "SAFETY" ||
-        parsed.finishReason === "PROHIBITED_CONTENT"
-      ) {
-        return {
-          ok: false,
-          status: "empty",
-          message: "The AI could not answer that request. Please rephrase it.",
-          detail: parsed.blockReason ?? parsed.finishReason,
-        };
-      }
-
+    if (!uploadUrl) {
       return {
         ok: false,
-        status: "empty",
-        message: "The AI returned no answer. Please try rephrasing your question.",
-        detail: parsed.finishReason,
+        status: "unavailable",
+        message: "Gemini did not provide an upload URL. Please try again.",
       };
     }
 
-    return {
-      ok: true,
-      text: parsed.text,
-      finishReason: parsed.finishReason,
-      promptTokens: parsed.promptTokens,
-      outputTokens: parsed.outputTokens,
-    };
+    const uploaded = await runner(uploadUrl, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Length": String(options.bytes.byteLength),
+        "X-Goog-Upload-Offset": "0",
+        "X-Goog-Upload-Command": "upload, finalize",
+      },
+      body: options.bytes,
+    });
+
+    if (!uploaded.ok) {
+      const detail = (await uploaded.text()).slice(0, 1000);
+      return classifyGeminiHttpError(uploaded.status, detail);
+    }
+
+    let payload = (await uploaded.json()) as GeminiFilePayload;
+    let file = payload.file;
+    let name = file?.name?.trim() ?? "";
+    let uri = file?.uri?.trim() ?? "";
+
+    if (!name || !uri) {
+      return {
+        ok: false,
+        status: "unavailable",
+        message: "Gemini uploaded the file but returned no file reference.",
+      };
+    }
+
+    // Finalized uploads are usually ACTIVE already. Poll only when Gemini
+    // reports that the document is still being processed.
+    const metadataUrl = `https://generativelanguage.googleapis.com/v1beta/${
+      name.startsWith("files/") ? name : `files/${name}`
+    }`;
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if ((file?.state ?? "ACTIVE") === "ACTIVE") break;
+
+      if (file?.state === "FAILED") {
+        return {
+          ok: false,
+          status: "bad_request",
+          message: "Gemini could not process the uploaded document.",
+          detail: `state=${file.state}`,
+        };
+      }
+
+      await sleep(2000);
+
+      const metadata = await runner(metadataUrl, {
+        method: "GET",
+        signal: controller.signal,
+        headers: { "x-goog-api-key": options.apiKey },
+      });
+
+      if (!metadata.ok) {
+        const detail = (await metadata.text()).slice(0, 1000);
+        return classifyGeminiHttpError(metadata.status, detail);
+      }
+
+      payload = (await metadata.json()) as GeminiFilePayload;
+      file = payload.file;
+
+      if (file?.name) name = file.name;
+      if (file?.uri) uri = file.uri;
+    }
+
+    if ((file?.state ?? "ACTIVE") !== "ACTIVE") {
+      return {
+        ok: false,
+        status: "timeout",
+        message: "Gemini took too long to process the uploaded document.",
+        detail: `state=${file?.state ?? "unknown"}`,
+      };
+    }
+
+    return { ok: true, name, uri };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       return {
         ok: false,
         status: "timeout",
-        message: "The AI took too long to answer. Please try again.",
+        message: "The document upload to Gemini timed out. Please try again.",
       };
     }
 
     return {
       ok: false,
       status: "unavailable",
-      message: "Could not reach the AI service. Please try again.",
+      message: "Could not upload the document to Gemini. Please try again.",
       detail: error instanceof Error ? error.message : String(error),
     };
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function deleteGeminiFile(options: {
+  apiKey: string;
+  name: string;
+  fetchImpl?: typeof fetch;
+}): Promise<void> {
+  const runner = options.fetchImpl ?? fetch;
+  const path = options.name.startsWith("files/")
+    ? options.name
+    : `files/${options.name}`;
+
+  try {
+    await runner(`https://generativelanguage.googleapis.com/v1beta/${path}`, {
+      method: "DELETE",
+      headers: { "x-goog-api-key": options.apiKey },
+    });
+  } catch {
+    // Temporary Gemini files expire automatically; cleanup is best effort.
   }
 }
 

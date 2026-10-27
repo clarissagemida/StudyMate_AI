@@ -4,6 +4,7 @@ import { confirmAction, showNotice } from "@/utils/notify";
 import { generateTeacherAi } from "@/utils/teacherAi";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { ScreenTitle } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
@@ -11,7 +12,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -32,6 +32,7 @@ const BG = colors.background;
 
 type QuizStatus = "draft" | "published";
 type Difficulty = "easy" | "medium" | "hard";
+type QuestionType = "multiple_choice" | "true_false";
 
 type QuizRow = {
   id: string;
@@ -48,6 +49,7 @@ type QuizRow = {
 type QuestionDraft = {
   // Client-only key so React lists stay stable while editing.
   key: string;
+  type: QuestionType;
   prompt: string;
   options: string[];
   correctIndex: number;
@@ -94,6 +96,7 @@ const FILTERS: { label: string; value: FilterValue }[] = [
 ];
 
 const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
+const TRUE_FALSE_OPTIONS = ["True", "False"];
 
 let keyCounter = 0;
 function makeKey(): string {
@@ -101,9 +104,18 @@ function makeKey(): string {
   return `q-${Date.now()}-${keyCounter}`;
 }
 
+function inferQuestionType(options: string[]): QuestionType {
+  return options.length === 2 &&
+    options[0].trim().toLowerCase() === "true" &&
+    options[1].trim().toLowerCase() === "false"
+    ? "true_false"
+    : "multiple_choice";
+}
+
 function makeEmptyQuestion(): QuestionDraft {
   return {
     key: makeKey(),
+    type: "multiple_choice",
     prompt: "",
     options: ["", "", "", ""],
     correctIndex: 0,
@@ -189,7 +201,13 @@ export default function TeacherQuizzesScreen() {
 
   const [materials, setMaterials] = useState<MaterialOption[]>([]);
   const [aiMaterialId, setAiMaterialId] = useState("");
-  const [aiCount, setAiCount] = useState(5);
+  const [aiCountText, setAiCountText] = useState("10");
+  const parsedAiCount = Number.parseInt(aiCountText, 10);
+  // const aiCount = parsedAiCount;
+  const aiCountValid =
+    Number.isInteger(parsedAiCount) &&
+    parsedAiCount >= 1 &&
+    parsedAiCount <= 50;
   const [generating, setGenerating] = useState(false);
   const [regeneratingKey, setRegeneratingKey] = useState<string | null>(null);
 
@@ -341,6 +359,7 @@ export default function TeacherQuizzesScreen() {
     setExistingQuestionIds([]);
     setQuestionsReady(true);
     setAiMaterialId("");
+    setAiCountText("10");
     setModalVisible(true);
   };
 
@@ -379,17 +398,24 @@ export default function TeacherQuizzesScreen() {
       if (questionLoadRef.current !== requestId) return;
 
       const rows = data ?? [];
-      const loaded: QuestionDraft[] = rows.map((row) => ({
-        key: makeKey(),
-        prompt: row.prompt ?? "",
-        options:
+      const loaded: QuestionDraft[] = rows.map((row) => {
+        const rawOptions =
           Array.isArray(row.options) && row.options.length >= 2
             ? (row.options as string[])
-            : ["", "", "", ""],
-        correctIndex:
-          typeof row.correct_index === "number" ? row.correct_index : 0,
-        explanation: row.explanation ?? "",
-      }));
+            : ["", "", "", ""];
+        const type = inferQuestionType(rawOptions);
+
+        return {
+          key: makeKey(),
+          type,
+          prompt: row.prompt ?? "",
+          options:
+            type === "true_false" ? [...TRUE_FALSE_OPTIONS] : rawOptions,
+          correctIndex:
+            typeof row.correct_index === "number" ? row.correct_index : 0,
+          explanation: row.explanation ?? "",
+        };
+      });
 
       setExistingQuestionIds(rows.map((row) => row.id));
       setQuestions(loaded.length > 0 ? loaded : [makeEmptyQuestion()]);
@@ -428,6 +454,28 @@ export default function TeacherQuizzesScreen() {
     );
   };
 
+  const setQuestionType = (key: string, type: QuestionType) => {
+    updateQuestion(key, (current) => {
+      if (current.type === type) return current;
+
+      if (type === "true_false") {
+        return {
+          ...current,
+          type,
+          options: [...TRUE_FALSE_OPTIONS],
+          correctIndex: 0,
+        };
+      }
+
+      return {
+        ...current,
+        type,
+        options: ["", "", "", ""],
+        correctIndex: 0,
+      };
+    });
+  };
+
   const addQuestion = () => {
     setQuestions((current) => [...current, makeEmptyQuestion()]);
   };
@@ -437,6 +485,10 @@ export default function TeacherQuizzesScreen() {
       if (current.length <= 1) return current;
       return current.filter((question) => question.key !== key);
     });
+  };
+
+  const handleAiCountChange = (value: string) => {
+    setAiCountText(value.replace(/[^0-9]/g, "").slice(0, 2));
   };
 
   const selectAiMaterial = (material: MaterialOption | null) => {
@@ -474,7 +526,15 @@ export default function TeacherQuizzesScreen() {
   };
 
   const handleAiGenerate = () => {
-    if (generating || saving || regeneratingKey || !questionsReady) return;
+    if (
+      generating ||
+      saving ||
+      regeneratingKey ||
+      !questionsReady ||
+      !aiCountValid
+    ) {
+      return;
+    }
 
     const context = resolveAiContext();
     if (!context) return;
@@ -487,7 +547,7 @@ export default function TeacherQuizzesScreen() {
         subject: context.subject,
         topic: context.topic,
         difficulty: form.difficulty,
-        questionCount: aiCount,
+        questionCount: parsedAiCount,
         materialId: aiMaterialId || undefined,
       });
 
@@ -506,6 +566,7 @@ export default function TeacherQuizzesScreen() {
       setQuestions(
         result.questions.map((question) => ({
           key: makeKey(),
+          type: "multiple_choice" as const,
           ...question,
           aiGenerated: true,
         })),
@@ -572,7 +633,12 @@ export default function TeacherQuizzesScreen() {
     setQuestions((current) =>
       current.map((question) =>
         question.key === key
-          ? { key: question.key, ...generated, aiGenerated: true }
+          ? {
+              key: question.key,
+              type: "multiple_choice",
+              ...generated,
+              aiGenerated: true,
+            }
           : question,
       ),
     );
@@ -892,6 +958,13 @@ export default function TeacherQuizzesScreen() {
         }
       />
 
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing quizzes"
+        />
+      ) : null}
+
       <FlatList
         data={visibleItems}
         keyExtractor={(item) => item.id}
@@ -903,8 +976,9 @@ export default function TeacherQuizzesScreen() {
             onRefresh={() => {
               void loadQuizzes("refresh");
             }}
-            tintColor={GREEN}
-            colors={[GREEN]}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
           />
         }
         ListHeaderComponent={
@@ -982,7 +1056,7 @@ export default function TeacherQuizzesScreen() {
                 ? "Run supabase/quizzes.sql in the Supabase SQL editor to activate quizzes."
                 : search.trim() || filter !== "all"
                   ? "Try a different search term or filter."
-                  : "Tap New to create your first quiz, then add multiple-choice questions."}
+                  : "Tap New to create your first quiz, then add multiple-choice or true/false questions."}
             </Text>
           </Card>
         }
@@ -1067,7 +1141,11 @@ export default function TeacherQuizzesScreen() {
                   ]}
                 >
                   {busy ? (
-                    <ActivityIndicator size="small" color={GREEN} />
+                    <ProgressIndicator
+                      size="sm"
+                      color={GREEN}
+                      accessibilityLabel="Updating quiz status"
+                    />
                   ) : (
                     <>
                       <Ionicons
@@ -1246,7 +1324,11 @@ export default function TeacherQuizzesScreen() {
                     </View>
 
                     {generating ? (
-                      <ActivityIndicator size="small" color={GREEN} />
+                      <ProgressIndicator
+                        size="sm"
+                        color={GREEN}
+                        accessibilityLabel="Generating quiz draft"
+                      />
                     ) : null}
                   </View>
 
@@ -1257,13 +1339,13 @@ export default function TeacherQuizzesScreen() {
 
                   <Text style={styles.aiLabel}>Questions</Text>
                   <View style={styles.aiChipRow}>
-                    {[3, 5, 10].map((count) => {
-                      const active = aiCount === count;
+                    {[10, 20, 30].map((count) => {
+                      const active = aiCountValid && parsedAiCount === count;
 
                       return (
                         <Pressable
                           key={count}
-                          onPress={() => setAiCount(count)}
+                          onPress={() => setAiCountText(String(count))}
                           accessibilityRole="button"
                           accessibilityState={{ selected: active }}
                           style={[
@@ -1283,6 +1365,36 @@ export default function TeacherQuizzesScreen() {
                       );
                     })}
                   </View>
+
+                  <View style={styles.aiCustomRow}>
+                    <Text style={styles.aiCustomLabel}>Custom</Text>
+                    <TextInput
+                      value={aiCountText}
+                      onChangeText={handleAiCountChange}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      selectTextOnFocus
+                      placeholder="10"
+                      placeholderTextColor={colors.textFaint}
+                      accessibilityLabel="Custom number of questions"
+                      accessibilityHint="Enter a number from 1 to 50"
+                      style={[
+                        styles.aiCountInput,
+                        !aiCountValid && styles.inputError,
+                      ]}
+                    />
+                    <Text style={styles.aiCustomRange}>1–50 questions</Text>
+                  </View>
+
+                  {!aiCountValid ? (
+                    <Text style={styles.errorText}>
+                      Enter a number from 1 to 50.
+                    </Text>
+                  ) : (
+                    <Text style={styles.aiCountHint}>
+                      Large drafts can take up to a minute.
+                    </Text>
+                  )}
 
                   <Text style={styles.aiLabel}>Source material</Text>
                   <ScrollView
@@ -1346,7 +1458,8 @@ export default function TeacherQuizzesScreen() {
                       generating ||
                       saving ||
                       !!regeneratingKey ||
-                      !questionsReady
+                      !questionsReady ||
+                      !aiCountValid
                     }
                     accessibilityRole="button"
                     accessibilityLabel="Generate quiz questions with AI"
@@ -1355,7 +1468,8 @@ export default function TeacherQuizzesScreen() {
                       (generating ||
                         saving ||
                         !!regeneratingKey ||
-                        !questionsReady) &&
+                        !questionsReady ||
+                        !aiCountValid) &&
                         styles.disabled,
                       pressed && styles.pressed,
                     ]}
@@ -1368,7 +1482,9 @@ export default function TeacherQuizzesScreen() {
                       <>
                         <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
                         <Text style={styles.aiGenerateText}>
-                          Generate {aiCount} questions
+                          {aiCountValid
+                            ? `Generate ${parsedAiCount} questions`
+                            : "Enter a question count"}
                         </Text>
                       </>
                     )}
@@ -1418,7 +1534,12 @@ export default function TeacherQuizzesScreen() {
                           ]}
                         >
                           {regeneratingKey === question.key ? (
-                            <ActivityIndicator size="small" color={GREEN} />
+                            <ProgressIndicator
+                              size="sm"
+                              color={GREEN}
+                              style={styles.inlineProgress}
+                              accessibilityLabel={`Regenerating question ${index + 1}`}
+                            />
                           ) : (
                             <Ionicons
                               name="refresh"
@@ -1446,6 +1567,42 @@ export default function TeacherQuizzesScreen() {
                     </View>
                   </View>
 
+                  <View style={styles.questionTypeRow}>
+                    {(
+                      [
+                        { label: "Multiple choice", value: "multiple_choice" },
+                        { label: "True / False", value: "true_false" },
+                      ] as const
+                    ).map((option) => {
+                      const active = question.type === option.value;
+
+                      return (
+                        <Pressable
+                          key={option.value}
+                          onPress={() =>
+                            setQuestionType(question.key, option.value)
+                          }
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          style={({ pressed }) => [
+                            styles.questionTypeChip,
+                            active && styles.questionTypeChipActive,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.questionTypeText,
+                              active && styles.questionTypeTextActive,
+                            ]}
+                          >
+                            {option.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+
                   <TextInput
                     value={question.prompt}
                     onChangeText={(value) =>
@@ -1468,6 +1625,7 @@ export default function TeacherQuizzesScreen() {
 
                   {question.options.map((option, optionIndex) => {
                     const isCorrect = question.correctIndex === optionIndex;
+                    const isTrueFalse = question.type === "true_false";
 
                     return (
                       <View key={optionIndex} style={styles.optionRow}>
@@ -1498,22 +1656,26 @@ export default function TeacherQuizzesScreen() {
                           {OPTION_LABELS[optionIndex]}
                         </Text>
 
-                        <TextInput
-                          value={option}
-                          onChangeText={(value) =>
-                            updateQuestion(question.key, (current) => {
-                              const nextOptions = [...current.options];
-                              nextOptions[optionIndex] = value;
-                              return { ...current, options: nextOptions };
-                            })
-                          }
-                          placeholder={`Answer ${OPTION_LABELS[optionIndex]}`}
-                          placeholderTextColor="#9AA69E"
-                          style={styles.optionInput}
-                          accessibilityLabel={`Answer ${OPTION_LABELS[optionIndex]}`}
-                        />
+                        {isTrueFalse ? (
+                          <Text style={styles.optionValue}>{option}</Text>
+                        ) : (
+                          <TextInput
+                            value={option}
+                            onChangeText={(value) =>
+                              updateQuestion(question.key, (current) => {
+                                const nextOptions = [...current.options];
+                                nextOptions[optionIndex] = value;
+                                return { ...current, options: nextOptions };
+                              })
+                            }
+                            placeholder={`Answer ${OPTION_LABELS[optionIndex]}`}
+                            placeholderTextColor="#9AA69E"
+                            style={styles.optionInput}
+                            accessibilityLabel={`Answer ${OPTION_LABELS[optionIndex]}`}
+                          />
+                        )}
 
-                        {question.options.length > 2 && (
+                        {!isTrueFalse && question.options.length > 2 && (
                           <Pressable
                             onPress={() =>
                               updateQuestion(question.key, (current) => {
@@ -1551,21 +1713,22 @@ export default function TeacherQuizzesScreen() {
                     );
                   })}
 
-                  {question.options.length < OPTION_LABELS.length && (
-                    <Pressable
-                      onPress={() =>
-                        updateQuestion(question.key, (current) => ({
-                          ...current,
-                          options: [...current.options, ""],
-                        }))
-                      }
-                      accessibilityRole="button"
-                      style={styles.addOption}
-                    >
-                      <Ionicons name="add" size={16} color={GREEN} />
-                      <Text style={styles.addOptionText}>Add answer</Text>
-                    </Pressable>
-                  )}
+                  {question.type === "multiple_choice" &&
+                    question.options.length < OPTION_LABELS.length && (
+                      <Pressable
+                        onPress={() =>
+                          updateQuestion(question.key, (current) => ({
+                            ...current,
+                            options: [...current.options, ""],
+                          }))
+                        }
+                        accessibilityRole="button"
+                        style={styles.addOption}
+                      >
+                        <Ionicons name="add" size={16} color={GREEN} />
+                        <Text style={styles.addOptionText}>Add answer</Text>
+                      </Pressable>
+                    )}
 
                   <Text style={styles.optionsLabel}>Explanation (optional)</Text>
                   <TextInput
@@ -1617,7 +1780,11 @@ export default function TeacherQuizzesScreen() {
                 ]}
               >
                 {saving ? (
-                  <ActivityIndicator size="small" color={GREEN} />
+                  <ProgressIndicator
+                    size="sm"
+                    color={GREEN}
+                    accessibilityLabel="Saving quiz"
+                  />
                 ) : (
                   <Text style={styles.secondaryButtonText}>
                     {editingId ? "Save Changes" : "Save as Draft"}
@@ -1649,6 +1816,16 @@ export default function TeacherQuizzesScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
+  },
+  inlineProgress: { width: 18, height: 3 },
   bigIcon: {
     width: 58,
     height: 58,
@@ -1842,6 +2019,29 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   aiChipRow: { flexDirection: "row", gap: 7 },
+  aiCustomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 2,
+  },
+  aiCustomLabel: { fontSize: 12, fontWeight: "700", color: "#43584A" },
+  aiCountInput: {
+    width: 58,
+    minHeight: 36,
+    paddingHorizontal: 8,
+    paddingVertical: 0,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: "#CFE2D6",
+    backgroundColor: "#FFFFFF",
+    textAlign: "center",
+    fontSize: 13,
+    fontWeight: "800",
+    color: DARK_GREEN,
+  },
+  aiCustomRange: { fontSize: 11, color: "#6B7F72" },
+  aiCountHint: { fontSize: 10, lineHeight: 14, color: "#6B7F72" },
   aiMaterialRow: { flexDirection: "row", gap: 7, paddingRight: 4 },
   aiChip: {
     minHeight: 36,
@@ -1869,6 +2069,32 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   aiGenerateText: { fontSize: 13, fontWeight: "800", color: "#FFFFFF" },
+  questionTypeRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: 2,
+  },
+  questionTypeChip: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: "#FFFFFF",
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+  },
+  questionTypeChipActive: {
+    backgroundColor: "#EAF4ED",
+    borderColor: GREEN,
+  },
+  questionTypeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#5A6D60",
+  },
+  questionTypeTextActive: { color: GREEN },
   questionTopLeft: { flexDirection: "row", alignItems: "center", gap: 7 },
   questionTopActions: { flexDirection: "row", alignItems: "center", gap: 12 },
   aiBadge: {
@@ -1943,6 +2169,13 @@ const styles = StyleSheet.create({
     minHeight: 42,
     fontSize: 13,
     color: colors.textPrimary,
+  },
+  optionValue: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: colors.textPrimary,
+    paddingVertical: spacing.sm,
   },
   addOption: {
     flexDirection: "row",

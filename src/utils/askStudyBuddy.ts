@@ -59,10 +59,14 @@ export async function askStudyBuddy(
     };
   }
 
-  const result = await invokeAi<StudyBuddyResponse>("study-buddy", {
-    message,
-    history,
-  });
+  const result = await invokeAi<StudyBuddyResponse>(
+    "study-buddy",
+    {
+      message,
+      history,
+    },
+    { timeoutMs: 120000 },
+  );
 
   if (!result.ok) {
     return {

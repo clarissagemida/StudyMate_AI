@@ -23,7 +23,8 @@ create table if not exists public.ai_usage (
   feature        text not null check (feature in (
                    'study_buddy',
                    'teacher_generator',
-                   'materials_index'
+                   'materials_index',
+                   'student_practice'
                  )),
   model          text not null default '',
   prompt_tokens  integer not null default 0 check (prompt_tokens >= 0),

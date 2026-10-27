@@ -1,10 +1,10 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -105,7 +105,11 @@ export default function AdminSettingsScreen() {
       >
         <View style={styles.profileCard}>
           {loading ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <ProgressIndicator
+              size="sm"
+              color="#FFFFFF"
+              accessibilityLabel="Loading administrator profile"
+            />
           ) : (
             <>
               <View style={styles.avatar}>
@@ -141,7 +145,11 @@ export default function AdminSettingsScreen() {
           disabled={signingOut}
         >
           {signingOut ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <ProgressIndicator
+              size="sm"
+              color="#FFFFFF"
+              accessibilityLabel="Signing out"
+            />
           ) : (
             <>
               <Ionicons name="log-out-outline" size={20} color="#FFFFFF" />

@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { ScreenTitle } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
@@ -135,28 +136,47 @@ export default function StudentQuizzesScreen() {
       const rows = (data ?? []) as QuizRow[];
       setItems(rows);
 
-      // Question counts for the whole list in one query.
+      // Question counts come from a safe RPC after students lose direct read
+      // access to quiz_questions. Fall back for projects without the migration.
       if (rows.length > 0) {
-        const { data: questionRows, error: questionError } = await supabase
-          .from("quiz_questions")
-          .select("quiz_id")
-          .in(
-            "quiz_id",
-            rows.map((row) => row.id),
-          );
+        const { data: countRows, error: countError } = await supabase.rpc(
+          "get_published_quiz_question_counts",
+        );
 
-        if (questionError) {
-          console.warn(
-            "Could not load question counts:",
-            questionError.message,
-          );
-          setQuestionCounts({});
-        } else {
+        if (!countError && Array.isArray(countRows)) {
           const counts: Record<string, number> = {};
-          for (const row of questionRows ?? []) {
-            counts[row.quiz_id] = (counts[row.quiz_id] ?? 0) + 1;
+          for (const value of countRows) {
+            if (!value || typeof value !== "object") continue;
+
+            const row = value as Record<string, unknown>;
+            if (typeof row.quiz_id !== "string") continue;
+
+            const count = Number(row.question_count);
+            counts[row.quiz_id] = Number.isFinite(count) ? count : 0;
           }
           setQuestionCounts(counts);
+        } else {
+          const { data: questionRows, error: questionError } = await supabase
+            .from("quiz_questions")
+            .select("quiz_id")
+            .in(
+              "quiz_id",
+              rows.map((row) => row.id),
+            );
+
+          if (questionError) {
+            console.warn(
+              "Could not load question counts:",
+              questionError.message,
+            );
+            setQuestionCounts({});
+          } else {
+            const counts: Record<string, number> = {};
+            for (const row of questionRows ?? []) {
+              counts[row.quiz_id] = (counts[row.quiz_id] ?? 0) + 1;
+            }
+            setQuestionCounts(counts);
+          }
         }
       } else {
         setQuestionCounts({});
@@ -292,6 +312,13 @@ export default function StudentQuizzesScreen() {
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
       <ScreenTitle title="Quizzes" subtitle="Test what you have learned" />
 
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing quizzes"
+        />
+      ) : null}
+
       <FlatList
         data={visibleItems}
         keyExtractor={(item) => item.id}
@@ -303,8 +330,9 @@ export default function StudentQuizzesScreen() {
             onRefresh={() => {
               void loadData("refresh");
             }}
-            tintColor={GREEN}
-            colors={[GREEN]}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
           />
         }
         ListHeaderComponent={
@@ -355,6 +383,32 @@ export default function StudentQuizzesScreen() {
                 </Pressable>
               )}
             </View>
+
+            <Pressable
+              onPress={() => {
+                try {
+                  router.push("/student/practice-select-material" as never);
+                } catch {
+                  router.navigate("/student/practice-select-material" as never);
+                }
+              }}
+              accessibilityRole="button"
+              style={styles.practiceCta}
+            >
+              <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
+              <Text style={styles.practiceCtaText}>
+                Generate Practice Quiz from Material
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => router.push("/student/practice-history" as never)}
+              accessibilityRole="button"
+              style={styles.practiceHistoryLink}
+            >
+              <Ionicons name="time-outline" size={16} color={GREEN} />
+              <Text style={styles.practiceHistoryText}>View Practice History</Text>
+            </Pressable>
           </View>
         }
         ListEmptyComponent={
@@ -446,7 +500,35 @@ export default function StudentQuizzesScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
+  },
   pressed: { opacity: 0.9 },
+  practiceCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: GREEN,
+    borderRadius: radius.lg,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginBottom: -4,
+  },
+  practiceCtaText: { color: "#FFFFFF", fontWeight: "800", fontSize: 13 },
+  practiceHistoryLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  practiceHistoryText: { color: GREEN, fontWeight: "700", fontSize: 12 },
   bigIcon: {
     width: 58,
     height: 58,

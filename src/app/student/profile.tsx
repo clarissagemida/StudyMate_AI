@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { deleteAccount } from "@/utils/deleteAccount";
@@ -10,7 +11,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -21,6 +21,8 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { evaluatePasswordStrength, isPasswordStrongEnough } from "@/utils/passwordStrength";
+import { changePassword } from "@/utils/changePassword";
 
 const GREEN = colors.primary;
 const BG = colors.background;
@@ -51,6 +53,23 @@ export default function StudentProfileScreen() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showDeletePassword, setShowDeletePassword] = useState(false);
+
+  // Profile edit
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editFullName, setEditFullName] = useState("");
+  const [editStudentId, setEditStudentId] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  // Password change
+  const [pwdModalVisible, setPwdModalVisible] = useState(false);
+  const [currentPwd, setCurrentPwd] = useState("");
+  const [newPwd, setNewPwd] = useState("");
+  const [confirmPwd, setConfirmPwd] = useState("");
+  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
+  const [showNewPwd, setShowNewPwd] = useState(false);
+  const [showConfirmPwd, setShowConfirmPwd] = useState(false);
+  const [pwdSaving, setPwdSaving] = useState(false);
+  const [pwdError, setPwdError] = useState<string | null>(null);
 
   const isWorking = working !== null;
 
@@ -103,6 +122,8 @@ export default function StudentProfileScreen() {
       }) as StudentProfile;
 
       setProfile(row);
+      setEditFullName(row.full_name ?? "");
+      setEditStudentId(row.student_id ?? "");
       setAvatarFailed(false);
       setLoadError(null);
 
@@ -322,6 +343,81 @@ export default function StudentProfileScreen() {
   const approvalStatus = profile?.approval_status ?? "unknown";
   const showAvatar = avatarUrl && !avatarFailed;
   const uploadingPhoto = working === "photo";
+
+  const saveProfile = async () => {
+    if (editSaving) return;
+    setEditSaving(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not signed in");
+      const updates: Record<string, any> = {
+        full_name: editFullName.trim() || null,
+      };
+      if (editStudentId.trim()) {
+        updates.student_id = editStudentId.trim();
+      }
+      const { error } = await supabase.from("profiles").update(updates).eq("id", user.id);
+      if (error) throw error;
+      setProfile((p) => (p ? { ...p, full_name: updates.full_name ?? p.full_name, student_id: updates.student_id ?? p.student_id } : p));
+      setEditModalVisible(false);
+      showNotice("Profile Updated", "Your profile has been updated.");
+    } catch (e: any) {
+      showNotice("Update Failed", e.message || "Could not update profile");
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const savePassword = async () => {
+    if (pwdSaving) return;
+    setPwdError(null);
+    if (!currentPwd) { setPwdError("Current password is required."); return; }
+    if (!newPwd) { setPwdError("New password is required."); return; }
+    if (!confirmPwd) { setPwdError("Confirm your new password."); return; }
+    if (newPwd !== confirmPwd) { setPwdError("Passwords do not match."); return; }
+    if (!isPasswordStrongEnough(newPwd)) {
+      setPwdError("Password is too weak. Use at least 8 characters with uppercase, lowercase, number, and symbol.");
+      return;
+    }
+    setPwdSaving(true);
+    try {
+      const res = await changePassword({ currentPassword: currentPwd, newPassword: newPwd, confirmPassword: confirmPwd });
+      if (!res.ok) throw new Error(res.message);
+      setPwdModalVisible(false);
+      setCurrentPwd("");
+      setNewPwd("");
+      setConfirmPwd("");
+      showNotice("Password Updated", res.message);
+    } catch (e: any) {
+      setPwdError(e.message || "Failed to change password");
+    } finally {
+      setPwdSaving(false);
+    }
+  };
+
+  const pwdStrength = evaluatePasswordStrength(newPwd);
+
+  const _handleOpenEdit = () => {
+    setEditFullName(profile?.full_name ?? "");
+    setEditStudentId(profile?.student_id ?? "");
+    setEditModalVisible(true);
+  };
+
+  const _handleOpenPasswordChange = () => {
+    setCurrentPwd("");
+    setNewPwd("");
+    setConfirmPwd("");
+    setShowCurrentPwd(false);
+    setShowNewPwd(false);
+    setShowConfirmPwd(false);
+    setPwdError(null);
+    setPwdModalVisible(true);
+  };
+
+  const handleOpenEdit = _handleOpenEdit;
+  const handleOpenPasswordChange = _handleOpenPasswordChange;
   const signingOut = working === "signingOut";
   const deleting = working === "deleting";
 
@@ -391,7 +487,11 @@ export default function StudentProfileScreen() {
             ]}
           >
             {uploadingPhoto ? (
-              <ActivityIndicator size="small" color={GREEN} />
+              <ProgressIndicator
+                size="sm"
+                color={GREEN}
+                accessibilityLabel="Uploading profile photo"
+              />
             ) : (
               <Ionicons name="camera-outline" size={17} color={GREEN} />
             )}
@@ -479,7 +579,11 @@ export default function StudentProfileScreen() {
           ]}
         >
           {signingOut ? (
-            <ActivityIndicator size="small" color="#C53030" />
+            <ProgressIndicator
+              size="sm"
+              color="#C53030"
+              accessibilityLabel="Logging out"
+            />
           ) : (
             <Ionicons name="log-out-outline" size={20} color="#C53030" />
           )}
@@ -517,7 +621,90 @@ export default function StudentProfileScreen() {
             </Text>
           </View>
         </Pressable>
-      </ScrollView>
+        </ScrollView>
+
+        {/* Edit Profile Modal */}
+        <Modal visible={editModalVisible} transparent animationType="fade" onRequestClose={() => setEditModalVisible(false)}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setEditModalVisible(false)} />
+          <View style={additionalStyles.modalSheet}>
+            <View style={additionalStyles.modalHeaderRow}>
+              <Text style={additionalStyles.modalTitle}>Edit Profile</Text>
+              <Pressable onPress={() => setEditModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#123D2A" />
+              </Pressable>
+            </View>
+            <View style={{ padding: 18, gap: 12 }}>
+              <Text style={additionalStyles.inputLabel}>Full Name</Text>
+              <TextInput value={editFullName} onChangeText={setEditFullName} style={additionalStyles.input} placeholder="Full name" placeholderTextColor="#9AA69E" />
+              <Text style={additionalStyles.inputLabel}>Student ID</Text>
+              <TextInput value={editStudentId} onChangeText={setEditStudentId} style={additionalStyles.input} placeholder="Student ID" placeholderTextColor="#9AA69E" />
+              <Pressable onPress={saveProfile} disabled={editSaving} style={[additionalStyles.primaryButton, editSaving && additionalStyles.buttonDisabled]}>
+                <Text style={additionalStyles.primaryButtonText}>{editSaving ? "Saving..." : "Save Changes"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Change Password Modal */}
+        <Modal visible={pwdModalVisible} transparent animationType="fade" onRequestClose={() => setPwdModalVisible(false)}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setPwdModalVisible(false)} />
+          <View style={additionalStyles.modalSheet}>
+            <View style={additionalStyles.modalHeaderRow}>
+              <Text style={additionalStyles.modalTitle}>Change Password</Text>
+              <Pressable onPress={() => setPwdModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#123D2A" />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ padding: 18, gap: 10 }}>
+              <Text style={additionalStyles.inputLabel}>Current Password</Text>
+              <View style={additionalStyles.passwordRow}>
+                <TextInput value={currentPwd} onChangeText={setCurrentPwd} secureTextEntry={!showCurrentPwd} style={additionalStyles.passwordInput} placeholder="Enter current password" placeholderTextColor="#9AA69E" />
+                <Pressable onPress={() => setShowCurrentPwd((v) => !v)} accessibilityRole="button" accessibilityLabel={showCurrentPwd ? "Hide password" : "Show password"} accessibilityState={{ selected: showCurrentPwd }}>
+                  <Ionicons name={showCurrentPwd ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7F72" />
+                </Pressable>
+              </View>
+
+              <Text style={additionalStyles.inputLabel}>New Password</Text>
+              <View style={additionalStyles.passwordRow}>
+                <TextInput value={newPwd} onChangeText={setNewPwd} secureTextEntry={!showNewPwd} style={additionalStyles.passwordInput} placeholder="Enter new password" placeholderTextColor="#9AA69E" />
+                <Pressable onPress={() => setShowNewPwd((v) => !v)} accessibilityRole="button" accessibilityLabel={showNewPwd ? "Hide password" : "Show password"} accessibilityState={{ selected: showNewPwd }}>
+                  <Ionicons name={showNewPwd ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7F72" />
+                </Pressable>
+              </View>
+
+              {newPwd.length > 0 ? (
+                <View style={additionalStyles.strengthBox}>
+                  <Text style={additionalStyles.strengthLabel}>Strength: {pwdStrength.label.toUpperCase()}</Text>
+                  <View style={additionalStyles.strengthBarRow}>
+                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 1 && additionalStyles.strengthBarActive]} />
+                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 2 && additionalStyles.strengthBarActive]} />
+                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 3 && additionalStyles.strengthBarActive]} />
+                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 4 && additionalStyles.strengthBarActive]} />
+                  </View>
+                  <Text style={additionalStyles.criteriaText}>Min 8 chars: {pwdStrength.criteria.minLength ? "✓" : "✗"}</Text>
+                  <Text style={additionalStyles.criteriaText}>Uppercase: {pwdStrength.criteria.hasUppercase ? "✓" : "✗"}</Text>
+                  <Text style={additionalStyles.criteriaText}>Lowercase: {pwdStrength.criteria.hasLowercase ? "✓" : "✗"}</Text>
+                  <Text style={additionalStyles.criteriaText}>Number: {pwdStrength.criteria.hasNumber ? "✓" : "✗"}</Text>
+                  <Text style={additionalStyles.criteriaText}>Special char: {pwdStrength.criteria.hasSpecial ? "✓" : "✗"}</Text>
+                </View>
+              ) : null}
+
+              <Text style={additionalStyles.inputLabel}>Confirm New Password</Text>
+              <View style={additionalStyles.passwordRow}>
+                <TextInput value={confirmPwd} onChangeText={setConfirmPwd} secureTextEntry={!showConfirmPwd} style={additionalStyles.passwordInput} placeholder="Confirm new password" placeholderTextColor="#9AA69E" />
+                <Pressable onPress={() => setShowConfirmPwd((v) => !v)} accessibilityRole="button" accessibilityLabel={showConfirmPwd ? "Hide password" : "Show password"} accessibilityState={{ selected: showConfirmPwd }}>
+                  <Ionicons name={showConfirmPwd ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7F72" />
+                </Pressable>
+              </View>
+
+              {pwdError ? <Text style={additionalStyles.errorText}>{pwdError}</Text> : null}
+
+              <Pressable onPress={savePassword} disabled={pwdSaving || !isPasswordStrongEnough(newPwd) || newPwd !== confirmPwd} style={[additionalStyles.primaryButton, (pwdSaving || !isPasswordStrongEnough(newPwd) || newPwd !== confirmPwd) && additionalStyles.buttonDisabled]}>
+                <Text style={additionalStyles.primaryButtonText}>{pwdSaving ? "Updating..." : "Update Password"}</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </Modal>
 
       {/* Re-authentication before the irreversible delete */}
       <Modal
@@ -607,7 +794,11 @@ export default function StudentProfileScreen() {
                 ]}
               >
                 {deleting ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <ProgressIndicator
+                    size="sm"
+                    color="#FFFFFF"
+                    accessibilityLabel="Deleting account"
+                  />
                 ) : (
                   <Text style={styles.modalDeleteText}>Delete Forever</Text>
                 )}
@@ -825,4 +1016,25 @@ const styles = StyleSheet.create({
     backgroundColor: "#C53030",
   },
   modalDeleteText: { fontSize: 13, fontWeight: "800", color: "#FFFFFF" },
+});
+
+const additionalStyles = StyleSheet.create({
+  linkText: { color: GREEN, fontWeight: '700', fontSize: 13 },
+  modalSheet: { position: 'absolute', left: 16, right: 16, top: '12%', backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E5EDE7', maxHeight: '76%' },
+  modalHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingTop: 16 },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: '#123D2A' },
+  inputLabel: { fontSize: 12, fontWeight: '700', color: '#6B7F72' },
+  input: { borderWidth: 1, borderColor: '#DDE7E0', borderRadius: 12, paddingHorizontal: 12, minHeight: 46, fontSize: 14, color: '#20392B', backgroundColor: '#F7FAF8' },
+  passwordRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#DDE7E0', borderRadius: 12, backgroundColor: '#F7FAF8', paddingHorizontal: 12 },
+  passwordInput: { flex: 1, minHeight: 46, fontSize: 14, color: '#20392B' },
+  strengthBox: { backgroundColor: '#F7FAF8', borderRadius: 12, borderWidth: 1, borderColor: '#E5EDE7', padding: 12, gap: 4 },
+  strengthLabel: { fontSize: 12, fontWeight: '800', color: '#123D2A' },
+  strengthBarRow: { flexDirection: 'row', gap: 6, marginTop: 4 },
+  strengthBar: { flex: 1, height: 6, borderRadius: 3, backgroundColor: '#E5EDE7' },
+  strengthBarActive: { backgroundColor: GREEN },
+  criteriaText: { fontSize: 11, color: '#5B7163' },
+  errorText: { fontSize: 12, color: '#C53030' },
+  primaryButton: { backgroundColor: GREEN, borderRadius: 12, minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  primaryButtonText: { color: '#FFFFFF', fontWeight: '800' },
+  buttonDisabled: { opacity: 0.5 },
 });

@@ -1,10 +1,10 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -223,7 +223,12 @@ export default function AdminHomeScreen() {
           <Ionicons name="school-outline" size={34} color="#16794A" />
         </View>
 
-        <ActivityIndicator size="large" color="#16794A" style={styles.loader} />
+        <ProgressIndicator
+          size="lg"
+          color="#16794A"
+          style={styles.loader}
+          accessibilityLabel="Loading dashboard"
+        />
 
         <Text style={styles.loadingTitle}>Loading dashboard</Text>
         <Text style={styles.loadingSubtitle}>
@@ -237,6 +242,13 @@ export default function AdminHomeScreen() {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
 
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing dashboard"
+        />
+      ) : null}
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
@@ -244,8 +256,9 @@ export default function AdminHomeScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            colors={["#16794A"]}
-            tintColor="#16794A"
+            colors={["transparent"]}
+            tintColor="transparent"
+            progressBackgroundColor="transparent"
           />
         }
       >
@@ -274,7 +287,11 @@ export default function AdminHomeScreen() {
             accessibilityLabel="Refresh dashboard"
           >
             {refreshing ? (
-              <ActivityIndicator size="small" color="#16794A" />
+              <ProgressIndicator
+                size="sm"
+                color="#16794A"
+                accessibilityLabel="Refreshing dashboard"
+              />
             ) : (
               <Ionicons name="refresh-outline" size={22} color="#16794A" />
             )}
@@ -620,6 +637,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#F4F8F5",
+  },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
   },
   scrollContent: {
     paddingHorizontal: 20,

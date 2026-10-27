@@ -14,8 +14,8 @@ type EnvDefaults = {
   GEMINI_EMBEDDING_MODEL?: string;
 };
 
-const FALLBACK_MODEL = "gemini-3.8-flash";
-const FALLBACK_EMBEDDING_MODEL = "gemini-embedding-2";
+const FALLBACK_MODEL = "gemini-2.5-flash";
+const FALLBACK_EMBEDDING_MODEL = "gemini-embedding-001";
 
 function defaultSettings(env: EnvDefaults): AiSettings {
   return {

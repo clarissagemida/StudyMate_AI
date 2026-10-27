@@ -1,6 +1,6 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { Ionicons } from "@expo/vector-icons";
 import {
-  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
@@ -21,11 +21,20 @@ export type ReaderMaterial = {
   content?: string | null;
 };
 
+type ReaderFile = {
+  name: string;
+  meta: string;
+};
+
 type Props = {
   material: ReaderMaterial | null;
   visible: boolean;
   loading?: boolean;
   onClose: () => void;
+  file?: ReaderFile | null;
+  onOpenFile?: () => void;
+  onDownloadFile?: () => void;
+  fileAction?: "open" | "download" | null;
 };
 
 function paragraphsOf(content: string): string[] {
@@ -41,6 +50,10 @@ export function MaterialReader({
   visible,
   loading = false,
   onClose,
+  file,
+  onOpenFile,
+  onDownloadFile,
+  fileAction = null,
 }: Props) {
   const content = (material?.content ?? "").trim();
   const paragraphs = paragraphsOf(content);
@@ -72,7 +85,11 @@ export function MaterialReader({
 
         {!material ? (
           <View style={styles.center}>
-            <ActivityIndicator color={GREEN} />
+            <ProgressIndicator
+              size="lg"
+              color={GREEN}
+              accessibilityLabel="Loading lesson"
+            />
           </View>
         ) : (
           <ScrollView
@@ -92,9 +109,90 @@ export function MaterialReader({
               </View>
             ) : null}
 
+            {file ? (
+              <View style={styles.fileBox}>
+                <View style={styles.fileTop}>
+                  <View style={styles.fileIcon}>
+                    <Ionicons
+                      name="document-attach-outline"
+                      size={20}
+                      color={GREEN}
+                    />
+                  </View>
+                  <View style={styles.fileText}>
+                    <Text style={styles.fileName} numberOfLines={2}>
+                      {file.name}
+                    </Text>
+                    <Text style={styles.fileMeta}>{file.meta}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.fileActions}>
+                  {onOpenFile ? (
+                    <Pressable
+                      onPress={onOpenFile}
+                      disabled={fileAction !== null}
+                      accessibilityRole="button"
+                      accessibilityLabel="Open attached file"
+                      style={({ pressed }) => [
+                        styles.fileButton,
+                        (pressed || fileAction === "open") && styles.pressed,
+                        fileAction !== null && styles.fileButtonDisabled,
+                      ]}
+                    >
+                      {fileAction === "open" ? (
+                        <ProgressIndicator
+                          size="sm"
+                          color={GREEN}
+                          accessibilityLabel="Opening file"
+                        />
+                      ) : (
+                        <Ionicons name="open-outline" size={16} color={GREEN} />
+                      )}
+                      <Text style={styles.fileButtonText}>Open file</Text>
+                    </Pressable>
+                  ) : null}
+
+                  {onDownloadFile ? (
+                    <Pressable
+                      onPress={onDownloadFile}
+                      disabled={fileAction !== null}
+                      accessibilityRole="button"
+                      accessibilityLabel="Download attached file"
+                      style={({ pressed }) => [
+                        styles.fileButton,
+                        styles.fileButtonSecondary,
+                        (pressed || fileAction === "download") && styles.pressed,
+                        fileAction !== null && styles.fileButtonDisabled,
+                      ]}
+                    >
+                      {fileAction === "download" ? (
+                        <ProgressIndicator
+                          size="sm"
+                          color={GREEN}
+                          accessibilityLabel="Downloading file"
+                        />
+                      ) : (
+                        <Ionicons
+                          name="download-outline"
+                          size={16}
+                          color={GREEN}
+                        />
+                      )}
+                      <Text style={styles.fileButtonText}>Download</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
+
             {loading ? (
               <View style={styles.loadingBox}>
-                <ActivityIndicator color={GREEN} />
+                <ProgressIndicator
+                  size="sm"
+                  color={GREEN}
+                  accessibilityLabel="Loading lesson"
+                />
                 <Text style={styles.loadingText}>Loading lesson...</Text>
               </View>
             ) : paragraphs.length > 0 ? (
@@ -108,14 +206,17 @@ export function MaterialReader({
             ) : (
               <View style={styles.emptyBox}>
                 <Ionicons
-                  name="document-text-outline"
+                  name={file ? "document-attach-outline" : "document-text-outline"}
                   size={26}
                   color={GREEN}
                 />
-                <Text style={styles.emptyTitle}>No lesson text yet</Text>
+                <Text style={styles.emptyTitle}>
+                  {file ? "Attached file only" : "No lesson text yet"}
+                </Text>
                 <Text style={styles.emptyText}>
-                  Your teacher has not added the full lesson for this material.
-                  Check back later or ask them about it.
+                  {file
+                    ? "The lesson text is still being prepared. Open the attached file to read the material."
+                    : "Your teacher has not added the full lesson for this material. Check back later or ask them about it."}
                 </Text>
               </View>
             )}
@@ -175,6 +276,45 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   description: { fontSize: 13, lineHeight: 20, color: "#33503F" },
+  fileBox: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#DCE8DF",
+    padding: 14,
+    gap: 12,
+    marginTop: 2,
+  },
+  fileTop: { flexDirection: "row", alignItems: "center", gap: 11 },
+  fileIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#E8F3EB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fileText: { flex: 1, minWidth: 0 },
+  fileName: { fontSize: 13, fontWeight: "800", color: DARK_GREEN },
+  fileMeta: { fontSize: 11, color: "#718078", marginTop: 3 },
+  fileActions: { flexDirection: "row", gap: 8 },
+  fileButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 11,
+    backgroundColor: "#E8F3EB",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  fileButtonSecondary: {
+    backgroundColor: "#F4F8F5",
+    borderWidth: 1,
+    borderColor: "#DCE8DF",
+  },
+  fileButtonDisabled: { opacity: 0.6 },
+  fileButtonText: { fontSize: 12, fontWeight: "800", color: GREEN },
   loadingBox: {
     flexDirection: "row",
     alignItems: "center",

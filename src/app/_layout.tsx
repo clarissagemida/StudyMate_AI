@@ -1,12 +1,9 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
-import * as SplashScreen from "expo-splash-screen";
 import { useColorScheme } from "react-native";
 
 import { AnimatedSplashOverlay } from "@/components/animated-icon";
 
-void SplashScreen.preventAutoHideAsync().catch(() => {
-  // Already hidden or unsupported on this platform — safe to ignore.
-});
+// Prevent auto hide - handled in animated splash overlay for this setup
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
@@ -24,6 +21,7 @@ export default function RootLayout() {
         <Stack.Screen name="student" />
         <Stack.Screen name="teacher" />
         <Stack.Screen name="admin" />
+        <Stack.Screen name="auth/callback" />
       </Stack>
     </ThemeProvider>
   );

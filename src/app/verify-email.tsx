@@ -1,9 +1,9 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -411,7 +411,11 @@ export default function VerifyEmailScreen() {
                 accessibilityLabel="Verify code"
               >
                 {verifying ? (
-                  <ActivityIndicator color="#FFFFFF" />
+                  <ProgressIndicator
+                    size="sm"
+                    color="#FFFFFF"
+                    accessibilityLabel="Verifying email code"
+                  />
                 ) : (
                   <>
                     <Text style={styles.verifyButtonText}>Verify</Text>
@@ -436,7 +440,11 @@ export default function VerifyEmailScreen() {
                 accessibilityLabel="Resend verification code"
               >
                 {resending ? (
-                  <ActivityIndicator color={GREEN} />
+                  <ProgressIndicator
+                    size="sm"
+                    color={GREEN}
+                    accessibilityLabel="Resending verification code"
+                  />
                 ) : (
                   <>
                     <Ionicons name="refresh" size={17} color={GREEN} />

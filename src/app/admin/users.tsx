@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { deleteAccount } from "@/utils/deleteAccount";
 import { confirmAction, showNotice } from "@/utils/notify";
@@ -5,7 +6,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   Image,
   Pressable,
@@ -652,7 +652,11 @@ export default function AdminUsersScreen() {
             ]}
           >
             {isUpdating ? (
-              <ActivityIndicator size="small" color={COLORS.primary} />
+              <ProgressIndicator
+                size="sm"
+                color={COLORS.primary}
+                accessibilityLabel="Updating account"
+              />
             ) : (
               <Ionicons
                 name="ellipsis-vertical"
@@ -849,6 +853,12 @@ export default function AdminUsersScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing users"
+        />
+      ) : null}
       <View style={styles.container}>
         <View style={styles.header}>
           <Pressable
@@ -880,7 +890,11 @@ export default function AdminUsersScreen() {
             style={styles.refreshButton}
           >
             {refreshing ? (
-              <ActivityIndicator size="small" color={COLORS.primary} />
+              <ProgressIndicator
+                size="sm"
+                color={COLORS.primary}
+                accessibilityLabel="Refreshing users"
+              />
             ) : (
               <Ionicons
                 name="refresh-outline"
@@ -904,8 +918,9 @@ export default function AdminUsersScreen() {
                 setOpenMenuId(null);
                 void fetchProfiles(true);
               }}
-              tintColor={COLORS.primary}
-              colors={[COLORS.primary]}
+              tintColor="transparent"
+              colors={["transparent"]}
+              progressBackgroundColor="transparent"
             />
           }
           ListHeaderComponent={
@@ -1074,7 +1089,11 @@ export default function AdminUsersScreen() {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               {loading ? (
-                <ActivityIndicator size="large" color={COLORS.primary} />
+                <ProgressIndicator
+                  size="lg"
+                  color={COLORS.primary}
+                  accessibilityLabel="Loading users"
+                />
               ) : (
                 <>
                   <View style={styles.emptyIcon}>
@@ -1124,6 +1143,15 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
   },
   container: {
     flex: 1,

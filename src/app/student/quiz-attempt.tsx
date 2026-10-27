@@ -1,11 +1,11 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { AI_ENABLED } from "@/utils/aiFlags";
-import { confirmAction } from "@/utils/notify";
+import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -34,16 +34,17 @@ type Question = {
   position: number;
   prompt: string;
   options: string[];
+};
+
+type ReviewQuestion = Question & {
   correct_index: number;
   explanation: string;
 };
 
-// One entry persisted per question after submit, for later review.
-type AnswerRecord = {
-  question_id: string;
-  selected_index: number;
-  correct_index: number;
-  is_correct: boolean;
+type SubmitResult = {
+  score: number;
+  total: number;
+  questions: ReviewQuestion[];
 };
 
 type Phase = "loading" | "taking" | "results";
@@ -63,13 +64,79 @@ function isMissingRelation(
   );
 }
 
+function isMissingFunction(
+  error: { code?: string; message?: string } | null,
+): boolean {
+  if (!error) return false;
+  if (error.code === "PGRST202" || error.code === "42883") return true;
+
+  const message = (error.message ?? "").toLowerCase();
+  return (
+    message.includes("could not find the function") ||
+    message.includes("function public.") ||
+    message.includes("does not exist")
+  );
+}
+
 function difficultyLabel(value: Difficulty) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function normalizeReviewQuestion(value: unknown): ReviewQuestion | null {
+  if (!value || typeof value !== "object") return null;
+
+  const row = value as Record<string, unknown>;
+  const id = typeof row.id === "string" ? row.id : "";
+  const prompt = typeof row.prompt === "string" ? row.prompt : "";
+  const options =
+    Array.isArray(row.options) && row.options.length >= 2
+      ? row.options.filter((option): option is string => typeof option === "string")
+      : [];
+
+  if (!id || options.length < 2) return null;
+
+  return {
+    id,
+    position: typeof row.position === "number" ? row.position : 0,
+    prompt,
+    options,
+    correct_index:
+      typeof row.correctIndex === "number" ? row.correctIndex : 0,
+    explanation: typeof row.explanation === "string" ? row.explanation : "",
+  };
+}
+
+function parseSubmitResult(value: unknown): SubmitResult {
+  if (!value || typeof value !== "object") {
+    throw new Error("The server returned an invalid quiz result.");
+  }
+
+  const raw = value as Record<string, unknown>;
+  const score = typeof raw.score === "number" ? raw.score : Number(raw.score);
+  const total = typeof raw.total === "number" ? raw.total : Number(raw.total);
+  const questions = Array.isArray(raw.questions)
+    ? raw.questions
+        .map(normalizeReviewQuestion)
+        .filter((question): question is ReviewQuestion => question !== null)
+    : [];
+
+  if (
+    !Number.isInteger(score) ||
+    !Number.isInteger(total) ||
+    total <= 0 ||
+    score < 0 ||
+    score > total ||
+    questions.length !== total
+  ) {
+    throw new Error("The server returned an incomplete quiz result.");
+  }
+
+  return { score, total, questions };
+}
+
 function buildMistakePrompt(
   quiz: QuizMeta,
-  questions: Question[],
+  questions: ReviewQuestion[],
   selections: Record<string, number>,
   score: number,
   total: number,
@@ -103,14 +170,15 @@ export default function QuizAttemptScreen() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [quiz, setQuiz] = useState<QuizMeta | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [reviewQuestions, setReviewQuestions] = useState<ReviewQuestion[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selections, setSelections] = useState<Record<string, number>>({});
 
   const [submitting, setSubmitting] = useState(false);
-  const [savedAttempt, setSavedAttempt] = useState<boolean | null>(null);
   const [score, setScore] = useState(0);
+  const [resultTotal, setResultTotal] = useState(0);
 
   const loadQuiz = useCallback(async () => {
     setPhase("loading");
@@ -148,28 +216,44 @@ export default function QuizAttemptScreen() {
         throw new Error("This quiz is no longer available.");
       }
 
-      const { data: questionData, error: questionError } = await supabase
-        .from("quiz_questions")
-        .select("id, position, prompt, options, correct_index, explanation")
-        .eq("quiz_id", quizId)
-        .order("position", { ascending: true });
+      const { data: questionData, error: questionError } = await supabase.rpc(
+        "get_quiz_questions",
+        { p_quiz_id: quizId },
+      );
 
-      if (questionError) throw new Error(questionError.message);
+      if (questionError) {
+        if (isMissingFunction(questionError)) {
+          throw new Error(
+            "Secure quiz mode is not configured yet. Run teacher_features.sql in Supabase.",
+          );
+        }
+        throw new Error(questionError.message);
+      }
 
-      const loaded: Question[] = (questionData ?? [])
-        .map((row) => ({
-          id: row.id,
-          position: typeof row.position === "number" ? row.position : 0,
-          prompt: row.prompt ?? "",
-          options:
+      const loaded: Question[] = (
+        Array.isArray(questionData) ? questionData : []
+      )
+        .map((value) => {
+          if (!value || typeof value !== "object") return null;
+
+          const row = value as Record<string, unknown>;
+          const options =
             Array.isArray(row.options) && row.options.length >= 2
-              ? (row.options as string[])
-              : [],
-          correct_index:
-            typeof row.correct_index === "number" ? row.correct_index : 0,
-          explanation: row.explanation ?? "",
-        }))
-        .filter((row) => row.options.length >= 2);
+              ? row.options.filter(
+                  (option): option is string => typeof option === "string",
+                )
+              : [];
+
+          if (typeof row.id !== "string" || options.length < 2) return null;
+
+          return {
+            id: row.id,
+            position: typeof row.position === "number" ? row.position : 0,
+            prompt: typeof row.prompt === "string" ? row.prompt : "",
+            options,
+          };
+        })
+        .filter((row): row is Question => row !== null);
 
       if (loaded.length === 0) {
         throw new Error("This quiz does not have any questions to answer.");
@@ -177,10 +261,11 @@ export default function QuizAttemptScreen() {
 
       setQuiz(quizData as QuizMeta);
       setQuestions(loaded);
+      setReviewQuestions([]);
       setCurrentIndex(0);
       setSelections({});
       setScore(0);
-      setSavedAttempt(null);
+      setResultTotal(0);
       setPhase("taking");
     } catch (err) {
       const message =
@@ -221,78 +306,47 @@ export default function QuizAttemptScreen() {
     }
   };
 
-  const computeScore = useCallback(() => {
-    let correct = 0;
-
-    for (const question of questions) {
-      if (selections[question.id] === question.correct_index) {
-        correct += 1;
-      }
-    }
-
-    return correct;
-  }, [questions, selections]);
-
-  const saveAttempt = useCallback(
-    async (finalScore: number) => {
-      const records: AnswerRecord[] = questions.map((question) => {
-        const selected = selections[question.id] ?? -1;
-
-        return {
-          question_id: question.id,
-          selected_index: selected,
-          correct_index: question.correct_index,
-          is_correct: selected === question.correct_index,
-        };
-      });
-
-      try {
-        const {
-          data: { user },
-          error: authError,
-        } = await supabase.auth.getUser();
-
-        if (authError || !user) {
-          setSavedAttempt(false);
-          return;
-        }
-
-        const { error } = await supabase.from("quiz_attempts").insert({
-          quiz_id: quizId,
-          student_id: user.id,
-          score: finalScore,
-          total,
-          answers: records,
-        });
-
-        if (error) {
-          if (!isMissingRelation(error)) {
-            console.warn("Could not save attempt:", error.message);
-          }
-          setSavedAttempt(false);
-          return;
-        }
-
-        setSavedAttempt(true);
-      } catch (error) {
-        console.warn("Could not save attempt:", error);
-        setSavedAttempt(false);
-      }
-    },
-    [questions, selections, quizId, total],
-  );
-
   const submit = useCallback(async () => {
+    if (submitting) return;
+
     setSubmitting(true);
 
-    const finalScore = computeScore();
-    setScore(finalScore);
-    setPhase("results");
+    try {
+      const answers: Record<string, number> = {};
 
-    await saveAttempt(finalScore);
+      for (const question of questions) {
+        const selected = selections[question.id];
+        if (selected !== undefined) answers[question.id] = selected;
+      }
 
-    setSubmitting(false);
-  }, [computeScore, saveAttempt]);
+      const { data, error } = await supabase.rpc("submit_quiz_attempt", {
+        p_quiz_id: quizId,
+        p_answers: answers,
+      });
+
+      if (error) {
+        if (isMissingRelation(error) || isMissingFunction(error)) {
+          throw new Error(
+            "Secure quiz grading is not configured yet. Run teacher_features.sql in Supabase.",
+          );
+        }
+        throw new Error(error.message);
+      }
+
+      const result = parseSubmitResult(data);
+      setScore(result.score);
+      setResultTotal(result.total);
+      setReviewQuestions(result.questions);
+      setPhase("results");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Could not submit your quiz.";
+      console.error("Quiz submit error:", err);
+      showNotice("Could Not Submit Quiz", message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [questions, quizId, selections, submitting]);
 
   const handleSubmitPress = () => {
     const unanswered = total - answeredCount;
@@ -330,10 +384,14 @@ export default function QuizAttemptScreen() {
     router.back();
   };
 
-  if (phase === "loading") {
+  if (phase === "loading" && !loadError) {
     return (
       <SafeAreaView style={styles.center} edges={["top", "bottom"]}>
-        <ActivityIndicator size="large" color={GREEN} />
+        <ProgressIndicator
+          size="lg"
+          color={GREEN}
+          accessibilityLabel="Loading quiz"
+        />
         <Text style={styles.centerText}>Loading quiz...</Text>
       </SafeAreaView>
     );
@@ -364,18 +422,20 @@ export default function QuizAttemptScreen() {
   }
 
   if (phase === "results") {
-    const percent = total > 0 ? Math.round((score / total) * 100) : 0;
+    const gradedTotal = resultTotal || reviewQuestions.length || total;
+    const percent =
+      gradedTotal > 0 ? Math.round((score / gradedTotal) * 100) : 0;
     const passed = percent >= 50;
     const circleColor = passed ? GREEN : "#B33A3A";
-    const wrongCount = questions.filter(
+    const wrongCount = reviewQuestions.filter(
       (question) => selections[question.id] !== question.correct_index,
     ).length;
     const mistakePrompt = buildMistakePrompt(
       quiz,
-      questions,
+      reviewQuestions,
       selections,
       score,
-      total,
+      gradedTotal,
     );
 
     return (
@@ -390,7 +450,7 @@ export default function QuizAttemptScreen() {
                 {percent}%
               </Text>
               <Text style={styles.scoreFraction}>
-                {score}/{total}
+                {score}/{gradedTotal}
               </Text>
             </View>
 
@@ -401,20 +461,6 @@ export default function QuizAttemptScreen() {
               {quiz.title}
               {quiz.subject ? ` · ${quiz.subject}` : ""}
             </Text>
-
-            {savedAttempt === false ? (
-              <View style={styles.saveWarning}>
-                <Ionicons
-                  name="alert-circle-outline"
-                  size={16}
-                  color="#8A6D1F"
-                />
-                <Text style={styles.saveWarningText}>
-                  Your result could not be saved to your history. The quiz
-                  results table may not be set up yet.
-                </Text>
-              </View>
-            ) : null}
 
             {AI_ENABLED && wrongCount > 0 ? (
               <Pressable
@@ -451,18 +497,11 @@ export default function QuizAttemptScreen() {
               <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
               <Text style={styles.primaryButtonText}>Done</Text>
             </Pressable>
-
-            {submitting ? (
-              <View style={styles.savingRow}>
-                <ActivityIndicator size="small" color={GREEN} />
-                <Text style={styles.savingText}>Saving result...</Text>
-              </View>
-            ) : null}
           </View>
 
           <Text style={styles.reviewHeading}>Review answers</Text>
 
-          {questions.map((question, index) => {
+          {reviewQuestions.map((question, index) => {
             const selected = selections[question.id] ?? -1;
             const isCorrect = selected === question.correct_index;
 
@@ -832,17 +871,6 @@ const styles = StyleSheet.create({
     color: "#65776B",
     textAlign: "center",
   },
-  saveWarning: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#FBF3DA",
-    borderRadius: 12,
-    padding: 12,
-  },
-  saveWarningText: { flex: 1, fontSize: 11, color: "#8A6D1F", lineHeight: 16 },
-  savingRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  savingText: { fontSize: 12, color: "#65776B" },
   reviewHeading: {
     fontSize: 15,
     fontWeight: "800",

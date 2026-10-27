@@ -1,18 +1,32 @@
 import { supabase } from "@/lib/supabase";
 import { AI_ENABLED } from "@/utils/aiFlags";
+import {
+  downloadMaterialFile,
+  extractionStatusLabel,
+  formatMaterialFileSize,
+  materialFileKind,
+  openMaterialFile,
+  pickMaterialFile,
+  removeMaterialFileQuietly,
+  requestMaterialExtraction,
+  uploadMaterialFile,
+  validatePickedMaterialFile,
+  type MaterialExtractionStatus,
+} from "@/utils/materialFiles";
 import { indexMaterial } from "@/utils/materialsIndex";
 import { confirmAction, showNotice } from "@/utils/notify";
 import { generateTeacherAi } from "@/utils/teacherAi";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { ScreenTitle } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
+import type { DocumentPickerAsset } from "expo-document-picker";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -41,6 +55,13 @@ type Material = {
   description: string;
   content: string;
   status: MaterialStatus;
+  file_path: string | null;
+  file_name: string;
+  file_mime: string;
+  file_size: number;
+  archived_at: string | null;
+  extraction_status: MaterialExtractionStatus;
+  extraction_error: string;
   created_at: string;
   updated_at: string;
 };
@@ -63,13 +84,23 @@ const EMPTY_FORM: FormState = {
   content: "",
 };
 
-type FilterValue = "all" | MaterialStatus;
+type FilterValue = "all" | MaterialStatus | "archived";
 
 const FILTERS: { label: string; value: FilterValue }[] = [
   { label: "All", value: "all" },
   { label: "Drafts", value: "draft" },
   { label: "Published", value: "published" },
+  { label: "Archived", value: "archived" },
 ];
+
+function extractionStatusFrom(value: unknown): MaterialExtractionStatus {
+  return value === "pending" ||
+    value === "processing" ||
+    value === "ready" ||
+    value === "failed"
+    ? value
+    : "none";
+}
 
 // PostgREST error codes for a table that has not been created yet.
 function isMissingRelation(
@@ -139,6 +170,29 @@ function formatDate(value: string) {
   });
 }
 
+function mapMaterialRow(row: Record<string, unknown>): Material {
+  return {
+    id: String(row.id ?? ""),
+    title: String(row.title ?? ""),
+    subject: String(row.subject ?? ""),
+    topic: typeof row.topic === "string" ? row.topic : "",
+    description: typeof row.description === "string" ? row.description : "",
+    content: typeof row.content === "string" ? row.content : "",
+    status: row.status === "published" ? "published" : "draft",
+    file_path: typeof row.file_path === "string" ? row.file_path : null,
+    file_name: typeof row.file_name === "string" ? row.file_name : "",
+    file_mime: typeof row.file_mime === "string" ? row.file_mime : "",
+    file_size: typeof row.file_size === "number" ? row.file_size : 0,
+    archived_at:
+      typeof row.archived_at === "string" ? row.archived_at : null,
+    extraction_status: extractionStatusFrom(row.extraction_status),
+    extraction_error:
+      typeof row.extraction_error === "string" ? row.extraction_error : "",
+    created_at: String(row.created_at ?? ""),
+    updated_at: String(row.updated_at ?? ""),
+  };
+}
+
 export default function TeacherMaterialsScreen() {
   const [items, setItems] = useState<Material[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -146,6 +200,7 @@ export default function TeacherMaterialsScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tableMissing, setTableMissing] = useState(false);
   const [groundingMissing, setGroundingMissing] = useState(false);
+  const [filesMissing, setFilesMissing] = useState(false);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
@@ -158,6 +213,9 @@ export default function TeacherMaterialsScreen() {
   const [saving, setSaving] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
+  const [pendingFile, setPendingFile] =
+    useState<DocumentPickerAsset | null>(null);
+  const [removeExistingFile, setRemoveExistingFile] = useState(false);
 
   const loadMaterials = useCallback(async (mode: LoadMode) => {
     if (mode === "refresh") setRefreshing(true);
@@ -173,63 +231,63 @@ export default function TeacherMaterialsScreen() {
         return;
       }
 
-      const primary = await supabase
+      const fullSelect =
+        "id, title, subject, topic, description, content, status, created_at, updated_at, file_path, file_name, file_mime, file_size, archived_at, extraction_status, extraction_error";
+      const contentSelect =
+        "id, title, subject, topic, description, content, status, created_at, updated_at";
+      const baseSelect =
+        "id, title, subject, topic, description, status, created_at, updated_at";
+
+      let result: {
+        data: unknown[] | null;
+        error: { code?: string; message?: string } | null;
+      } = await supabase
         .from("materials")
-        .select(
-          "id, title, subject, topic, description, content, status, created_at, updated_at",
-        )
+        .select(fullSelect)
         .eq("teacher_id", user.id)
         .order("created_at", { ascending: false });
 
-      let data: unknown[] | null = primary.data;
-      let error = primary.error;
       let missingGrounding = false;
+      let missingFiles = false;
 
-      // ai_grounding.sql adds materials.content. Until it runs, keep the
-      // materials screen usable without the AI content field.
-      if (isMissingColumn(error)) {
-        missingGrounding = true;
+      // Keep the screen usable against older migrations: first drop the file
+      // columns, then (if needed) the AI grounding column and archive field.
+      if (isMissingColumn(result.error)) {
+        missingFiles = true;
 
-        const fallback = await supabase
+        result = await supabase
           .from("materials")
-          .select(
-            "id, title, subject, topic, description, status, created_at, updated_at",
-          )
+          .select(contentSelect)
           .eq("teacher_id", user.id)
           .order("created_at", { ascending: false });
 
-        data = fallback.data as unknown[] | null;
-        error = fallback.error;
+        if (isMissingColumn(result.error)) {
+          missingGrounding = true;
+
+          result = await supabase
+            .from("materials")
+            .select(baseSelect)
+            .eq("teacher_id", user.id)
+            .order("created_at", { ascending: false });
+        }
       }
 
-      if (isMissingRelation(error)) {
+      if (isMissingRelation(result.error)) {
         setTableMissing(true);
         setItems([]);
         setLoadError(null);
         return;
       }
 
-      if (error) throw new Error(error.message);
+      if (result.error) throw new Error(result.error.message);
 
       setTableMissing(false);
       setGroundingMissing(missingGrounding);
+      setFilesMissing(missingFiles || missingGrounding);
 
-      const rows = (data ?? []) as unknown as Record<string, unknown>[];
+      const rows = (result.data ?? []) as unknown as Record<string, unknown>[];
 
-      setItems(
-        rows.map((row) => ({
-          id: String(row.id ?? ""),
-          title: String(row.title ?? ""),
-          subject: String(row.subject ?? ""),
-          topic: typeof row.topic === "string" ? row.topic : "",
-          description:
-            typeof row.description === "string" ? row.description : "",
-          content: typeof row.content === "string" ? row.content : "",
-          status: row.status === "published" ? "published" : "draft",
-          created_at: String(row.created_at ?? ""),
-          updated_at: String(row.updated_at ?? ""),
-        })),
-      );
+      setItems(rows.map(mapMaterialRow));
       setLoadError(null);
     } catch (err) {
       const message =
@@ -263,12 +321,22 @@ export default function TeacherMaterialsScreen() {
     const term = search.trim().toLowerCase();
 
     return items.filter((item) => {
-      const matchesFilter = filter === "all" || item.status === filter;
+      const archived = Boolean(item.archived_at);
+      const matchesFilter =
+        filter === "all"
+          ? true
+          : filter === "archived"
+            ? archived
+            : !archived && item.status === filter;
       const matchesSearch =
         !term ||
-        [item.title, item.subject, item.topic, item.description].some(
-          (value) => (value ?? "").toLowerCase().includes(term),
-        );
+        [
+          item.title,
+          item.subject,
+          item.topic,
+          item.description,
+          item.file_name,
+        ].some((value) => (value ?? "").toLowerCase().includes(term));
 
       return matchesFilter && matchesSearch;
     });
@@ -279,6 +347,8 @@ export default function TeacherMaterialsScreen() {
     setEditingStatus("draft");
     setForm(EMPTY_FORM);
     setFormErrors({});
+    setPendingFile(null);
+    setRemoveExistingFile(false);
     setModalVisible(true);
   };
 
@@ -293,6 +363,8 @@ export default function TeacherMaterialsScreen() {
       content: typeof item.content === "string" ? item.content : "",
     });
     setFormErrors({});
+    setPendingFile(null);
+    setRemoveExistingFile(false);
     setModalVisible(true);
   };
 
@@ -300,6 +372,32 @@ export default function TeacherMaterialsScreen() {
     if (saving || drafting) return;
     setModalVisible(false);
     setFormErrors({});
+    setPendingFile(null);
+    setRemoveExistingFile(false);
+  };
+
+  const handlePickFile = async () => {
+    if (saving || drafting) return;
+
+    try {
+      const asset = await pickMaterialFile();
+
+      if (!asset) return;
+
+      const validation = validatePickedMaterialFile(asset);
+
+      if (!validation.ok) {
+        showNotice("File Not Supported", validation.message);
+        return;
+      }
+
+      setPendingFile(asset);
+      setRemoveExistingFile(false);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The file picker failed.";
+      showNotice("Could Not Open File", message);
+    }
   };
 
   const handleAiDraft = async () => {
@@ -341,6 +439,42 @@ export default function TeacherMaterialsScreen() {
     setForm((current) => ({ ...current, content: result.content }));
   };
 
+  const runMaterialExtraction = async (
+    materialId: string,
+  ): Promise<boolean> => {
+    setItems((current) =>
+      (current ?? []).map((row) =>
+        row.id === materialId
+          ? {
+              ...row,
+              extraction_status: "processing",
+              extraction_error: "",
+            }
+          : row,
+      ),
+    );
+
+    const result = await requestMaterialExtraction(materialId);
+
+    if (!result.ok) {
+      showNotice(
+        "Text Extraction Failed",
+        `${result.message} The file is still attached, so you can preview or download it.`,
+      );
+      await loadMaterials("refresh");
+      return false;
+    }
+
+    void indexMaterial(materialId).then((indexed) => {
+      if (!indexed.ok) {
+        console.warn("Material indexing after extraction skipped:", indexed.message);
+      }
+    });
+
+    await loadMaterials("refresh");
+    return true;
+  };
+
   const handleSave = async (status: MaterialStatus) => {
     if (saving || drafting) return;
 
@@ -350,6 +484,13 @@ export default function TeacherMaterialsScreen() {
     if (Object.keys(errors).length > 0) return;
 
     setSaving(true);
+
+    let uploadedFile: {
+      path: string;
+      name: string;
+      mimeType: string;
+      size: number;
+    } | null = null;
 
     try {
       const {
@@ -362,6 +503,20 @@ export default function TeacherMaterialsScreen() {
         return;
       }
 
+      if (pendingFile && filesMissing) {
+        throw new Error(
+          "File attachments are not configured yet. Run supabase/teacher_features.sql first.",
+        );
+      }
+
+      const previousFile =
+        (editingId ? items?.find((row) => row.id === editingId)?.file_path : null) ??
+        null;
+
+      if (pendingFile) {
+        uploadedFile = await uploadMaterialFile(pendingFile, user.id);
+      }
+
       // "Save & Publish" always publishes. The secondary button must never
       // silently unpublish an already-published material, so when editing we
       // keep the row's existing status unless the user chose to publish.
@@ -372,7 +527,7 @@ export default function TeacherMaterialsScreen() {
             ? editingStatus
             : "draft";
 
-      const payload = {
+      const payload: Record<string, unknown> = {
         title: form.title.trim(),
         subject: form.subject.trim(),
         topic: form.topic.trim(),
@@ -381,6 +536,24 @@ export default function TeacherMaterialsScreen() {
         updated_at: new Date().toISOString(),
         ...(groundingMissing ? {} : { content: form.content.trim() }),
       };
+
+      if (!filesMissing) {
+        if (uploadedFile) {
+          payload.file_path = uploadedFile.path;
+          payload.file_name = uploadedFile.name;
+          payload.file_mime = uploadedFile.mimeType;
+          payload.file_size = uploadedFile.size;
+          payload.extraction_status = "pending";
+          payload.extraction_error = "";
+        } else if (removeExistingFile && editingId) {
+          payload.file_path = null;
+          payload.file_name = "";
+          payload.file_mime = "";
+          payload.file_size = 0;
+          payload.extraction_status = "none";
+          payload.extraction_error = "";
+        }
+      }
 
       let savedId = editingId;
 
@@ -416,21 +589,38 @@ export default function TeacherMaterialsScreen() {
         savedId = typeof data?.id === "string" ? data.id : null;
       }
 
+      if (
+        previousFile &&
+        (uploadedFile?.path !== previousFile) &&
+        (uploadedFile || removeExistingFile)
+      ) {
+        void removeMaterialFileQuietly(previousFile);
+      }
+
+      setPendingFile(null);
+      setRemoveExistingFile(false);
       setModalVisible(false);
       setFormErrors({});
       await loadMaterials("refresh");
 
       // Grounding is a background best effort: a failed index must never make
-      // a saved material look unsaved. Indexing an empty material clears stale
-      // chunks so AI Buddy cannot quote content the teacher removed.
+      // a saved material look unsaved. File-backed material is indexed only
+      // after extraction so AI Buddy never quotes stale text.
       if (savedId && !groundingMissing) {
-        void indexMaterial(savedId).then((result) => {
-          if (!result.ok) {
-            console.warn("Material indexing skipped:", result.message);
-          }
-        });
+        if (uploadedFile) {
+          void runMaterialExtraction(savedId);
+        } else {
+          void indexMaterial(savedId).then((result) => {
+            if (!result.ok) {
+              console.warn("Material indexing skipped:", result.message);
+            }
+          });
+        }
       }
     } catch (err) {
+      if (uploadedFile) {
+        void removeMaterialFileQuietly(uploadedFile.path);
+      }
       const message =
         err instanceof Error ? err.message : "Something went wrong.";
       console.error("Material save error:", err);
@@ -486,6 +676,93 @@ export default function TeacherMaterialsScreen() {
     }
   };
 
+  const handleToggleArchive = async (item: Material) => {
+    if (actionId) return;
+
+    const nextArchivedAt = item.archived_at ? null : new Date().toISOString();
+    setActionId(item.id);
+
+    try {
+      const { data, error } = await supabase
+        .from("materials")
+        .update({
+          archived_at: nextArchivedAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", item.id)
+        .select("id");
+
+      if (error) throw new Error(error.message);
+
+      if (!data || data.length === 0) {
+        showNotice(
+          "Update Failed",
+          "This material no longer exists. Pull to refresh.",
+        );
+        void loadMaterials("refresh");
+        return;
+      }
+
+      setItems((current) =>
+        (current ?? []).map((row) =>
+          row.id === item.id ? { ...row, archived_at: nextArchivedAt } : row,
+        ),
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      console.error("Material archive error:", err);
+      showNotice("Update Failed", message);
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const handleOpenFile = async (item: Material) => {
+    if (!item.file_path || actionId) return;
+    setActionId(item.id);
+
+    try {
+      await openMaterialFile(item.file_path);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "The file could not be opened.";
+      showNotice("Could Not Open File", message);
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const handleDownloadFile = async (item: Material) => {
+    if (!item.file_path || actionId) return;
+    setActionId(item.id);
+
+    try {
+      await downloadMaterialFile({
+        filePath: item.file_path,
+        fileName: item.file_name || `${item.title}.pdf`,
+        mimeType: item.file_mime || "application/octet-stream",
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "The file could not be downloaded.";
+      showNotice("Download Failed", message);
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const handleExtractFile = async (item: Material) => {
+    if (!item.file_path || actionId) return;
+    setActionId(item.id);
+
+    try {
+      await runMaterialExtraction(item.id);
+    } finally {
+      setActionId(null);
+    }
+  };
+
   const handleDelete = (item: Material) => {
     confirmAction(
       "Delete Material",
@@ -511,6 +788,8 @@ export default function TeacherMaterialsScreen() {
             return;
           }
 
+          void removeMaterialFileQuietly(item.file_path);
+
           setItems((current) =>
             (current ?? []).filter((row) => row.id !== item.id),
           );
@@ -532,6 +811,13 @@ export default function TeacherMaterialsScreen() {
     setLoadError(null);
     void loadMaterials("initial");
   };
+
+  const editingMaterial =
+    (editingId ? items?.find((row) => row.id === editingId) : null) ?? null;
+  const existingFile =
+    editingMaterial && !removeExistingFile && editingMaterial.file_path
+      ? editingMaterial
+      : null;
 
   if (loading && items === null) {
     return <StateView variant="loading" title="Loading your materials..." />;
@@ -575,6 +861,13 @@ export default function TeacherMaterialsScreen() {
         }
       />
 
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing materials"
+        />
+      ) : null}
+
       <FlatList
         data={visibleItems}
         keyExtractor={(item) => item.id}
@@ -586,8 +879,9 @@ export default function TeacherMaterialsScreen() {
             onRefresh={() => {
               void loadMaterials("refresh");
             }}
-            tintColor={GREEN}
-            colors={[GREEN]}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
           />
         }
         ListHeaderComponent={
@@ -604,6 +898,23 @@ export default function TeacherMaterialsScreen() {
                   <Text style={styles.noticeStrong}>supabase/materials.sql</Text>{" "}
                   in the Supabase SQL editor, then pull to refresh. This screen
                   will start working with no further changes.
+                </Text>
+              </View>
+            )}
+
+            {!tableMissing && filesMissing && (
+              <View style={styles.notice}>
+                <Ionicons
+                  name="document-attach-outline"
+                  size={18}
+                  color={GREEN}
+                />
+                <Text style={styles.noticeText}>
+                  File attachments and archive are not configured yet. Run{" "}
+                  <Text style={styles.noticeStrong}>
+                    supabase/teacher_features.sql
+                  </Text>{" "}
+                  to enable them. Text materials keep working.
                 </Text>
               </View>
             )}
@@ -707,8 +1018,21 @@ export default function TeacherMaterialsScreen() {
                 </View>
 
                 <Chip
-                  label={item.status === "published" ? "Published" : "Draft"}
-                  tone={item.status === "published" ? "success" : "warning"}
+                  label={
+                    item.archived_at
+                      ? "Archived"
+                      : item.status === "published"
+                        ? "Published"
+                        : "Draft"
+                  }
+                  tone={
+                    item.archived_at
+                      ? "neutral"
+                      : item.status === "published"
+                        ? "success"
+                        : "warning"
+                  }
+                  icon={item.archived_at ? "archive-outline" : undefined}
                 />
               </View>
 
@@ -718,13 +1042,72 @@ export default function TeacherMaterialsScreen() {
                 </Text>
               ) : null}
 
+              {item.file_path ? (
+                <View style={styles.fileBox}>
+                  <View style={styles.fileIcon}>
+                    <Ionicons
+                      name="document-attach-outline"
+                      size={20}
+                      color={GREEN}
+                    />
+                  </View>
+
+                  <View style={styles.fileText}>
+                    <Text style={styles.fileName} numberOfLines={1}>
+                      {item.file_name || item.file_path.split("/").pop()}
+                    </Text>
+                    <Text style={styles.fileMeta}>
+                      {materialFileKind(item.file_mime)} ·{" "}
+                      {formatMaterialFileSize(item.file_size)}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.extractionText,
+                        item.extraction_status === "failed" &&
+                          styles.extractionFailed,
+                        item.extraction_status === "ready" &&
+                          styles.extractionReady,
+                      ]}
+                    >
+                      {extractionStatusLabel(item.extraction_status)}
+                    </Text>
+
+                    {item.extraction_status === "failed" &&
+                    item.extraction_error ? (
+                      <Text style={styles.extractionError} numberOfLines={3}>
+                        {item.extraction_error}
+                      </Text>
+                    ) : null}
+                  </View>
+
+                  {item.extraction_status === "failed" && !busy ? (
+                    <Pressable
+                      onPress={() => void handleExtractFile(item)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Retry text extraction for ${item.title}`}
+                      style={({ pressed }) => [
+                        styles.retryButton,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Ionicons name="refresh" size={14} color={GREEN} />
+                      <Text style={styles.retryText}>Retry</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : null}
+
               <Text style={styles.cardDate}>
                 Created {formatDate(item.created_at)}
               </Text>
 
               <View style={styles.cardActions}>
                 {busy ? (
-                  <ActivityIndicator size="small" color={GREEN} />
+                  <ProgressIndicator
+                    size="sm"
+                    color={GREEN}
+                    accessibilityLabel="Updating material"
+                  />
                 ) : (
                   <>
                     <Pressable
@@ -739,6 +1122,44 @@ export default function TeacherMaterialsScreen() {
                       <Ionicons name="pencil-outline" size={17} color={GREEN} />
                       <Text style={styles.actionButtonText}>Edit</Text>
                     </Pressable>
+
+                    {item.file_path ? (
+                      <>
+                        <Pressable
+                          onPress={() => void handleOpenFile(item)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Open file for ${item.title}`}
+                          style={({ pressed }) => [
+                            styles.actionButton,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Ionicons
+                            name="open-outline"
+                            size={17}
+                            color={GREEN}
+                          />
+                          <Text style={styles.actionButtonText}>Open</Text>
+                        </Pressable>
+
+                        <Pressable
+                          onPress={() => void handleDownloadFile(item)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Download file for ${item.title}`}
+                          style={({ pressed }) => [
+                            styles.actionButton,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Ionicons
+                            name="download-outline"
+                            size={17}
+                            color={GREEN}
+                          />
+                          <Text style={styles.actionButtonText}>Download</Text>
+                        </Pressable>
+                      </>
+                    ) : null}
 
                     <Pressable
                       onPress={() => void handleToggleStatus(item)}
@@ -764,6 +1185,33 @@ export default function TeacherMaterialsScreen() {
                       />
                       <Text style={styles.actionButtonText}>
                         {item.status === "published" ? "Unpublish" : "Publish"}
+                      </Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={() => void handleToggleArchive(item)}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        item.archived_at
+                          ? `Restore ${item.title}`
+                          : `Archive ${item.title}`
+                      }
+                      style={({ pressed }) => [
+                        styles.actionButton,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Ionicons
+                        name={
+                          item.archived_at
+                            ? "arrow-undo-outline"
+                            : "archive-outline"
+                        }
+                        size={17}
+                        color={GREEN}
+                      />
+                      <Text style={styles.actionButtonText}>
+                        {item.archived_at ? "Restore" : "Archive"}
                       </Text>
                     </Pressable>
 
@@ -887,6 +1335,140 @@ export default function TeacherMaterialsScreen() {
                 <Text style={styles.errorText}>{formErrors.description}</Text>
               )}
 
+              {!filesMissing ? (
+                <>
+                  <Text style={styles.label}>File Attachment</Text>
+
+                  {pendingFile ? (
+                    <View style={styles.selectedFileBox}>
+                      <View style={styles.fileIcon}>
+                        <Ionicons
+                          name="document-attach-outline"
+                          size={20}
+                          color={GREEN}
+                        />
+                      </View>
+                      <View style={styles.fileText}>
+                        <Text style={styles.fileName} numberOfLines={1}>
+                          {pendingFile.name}
+                        </Text>
+                        <Text style={styles.fileMeta}>
+                          {pendingFile.size
+                            ? formatMaterialFileSize(pendingFile.size)
+                            : "Ready to upload"}
+                        </Text>
+                        <Text style={styles.hintText}>
+                          Text will be extracted after saving.
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={() => setPendingFile(null)}
+                        disabled={saving}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove selected file"
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          styles.removeFileButton,
+                          pressed && styles.pressed,
+                          saving && styles.disabled,
+                        ]}
+                      >
+                        <Ionicons name="close" size={18} color={colors.danger} />
+                      </Pressable>
+                    </View>
+                  ) : existingFile ? (
+                    <View style={styles.selectedFileBox}>
+                      <View style={styles.fileIcon}>
+                        <Ionicons
+                          name="document-attach-outline"
+                          size={20}
+                          color={GREEN}
+                        />
+                      </View>
+                      <View style={styles.fileText}>
+                        <Text style={styles.fileName} numberOfLines={1}>
+                          {existingFile.file_name ||
+                            existingFile.file_path?.split("/").pop()}
+                        </Text>
+                        <Text style={styles.fileMeta}>
+                          {materialFileKind(existingFile.file_mime)} ·{" "}
+                          {formatMaterialFileSize(existingFile.file_size)}
+                        </Text>
+                        <Text style={styles.hintText}>
+                          {extractionStatusLabel(
+                            existingFile.extraction_status,
+                          )}
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={() => setRemoveExistingFile(true)}
+                        disabled={saving}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove attached file"
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          styles.removeFileButton,
+                          pressed && styles.pressed,
+                          saving && styles.disabled,
+                        ]}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                      </Pressable>
+                    </View>
+                  ) : (
+                    <Pressable
+                      onPress={() => void handlePickFile()}
+                      disabled={saving || drafting}
+                      accessibilityRole="button"
+                      accessibilityLabel="Choose a PDF, DOCX, or PPTX file"
+                      style={({ pressed }) => [
+                        styles.chooseFileButton,
+                        pressed && styles.pressed,
+                        (saving || drafting) && styles.disabled,
+                      ]}
+                    >
+                      <Ionicons
+                        name="cloud-upload-outline"
+                        size={19}
+                        color={GREEN}
+                      />
+                      <Text style={styles.chooseFileText}>
+                        Choose PDF, DOCX, or PPTX
+                      </Text>
+                    </Pressable>
+                  )}
+
+                  {existingFile || pendingFile ? (
+                    <Pressable
+                      onPress={() => void handlePickFile()}
+                      disabled={saving || drafting}
+                      accessibilityRole="button"
+                      accessibilityLabel="Replace attached file"
+                      style={({ pressed }) => [
+                        styles.replaceFileButton,
+                        pressed && styles.pressed,
+                        (saving || drafting) && styles.disabled,
+                      ]}
+                    >
+                      <Ionicons name="swap-horizontal" size={14} color={GREEN} />
+                      <Text style={styles.replaceFileText}>
+                        {pendingFile ? "Choose a different file" : "Replace file"}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+
+                  <Text style={styles.hintText}>
+                    Maximum 50 MB. PDF text is extracted with AI; DOCX and PPTX
+                    are read directly. You can publish even if extraction fails.
+                  </Text>
+                </>
+              ) : (
+                <Text style={styles.hintText}>
+                  Run supabase/teacher_features.sql to enable file attachments,
+                  archiving, and secure quiz grading.
+                </Text>
+              )}
+
               <View style={styles.contentLabelRow}>
                 <Text style={styles.label}>Lesson Content</Text>
 
@@ -903,7 +1485,11 @@ export default function TeacherMaterialsScreen() {
                     ]}
                   >
                     {drafting ? (
-                      <ActivityIndicator size="small" color={GREEN} />
+                      <ProgressIndicator
+                        size="sm"
+                        color={GREEN}
+                        accessibilityLabel="Drafting lesson content"
+                      />
                     ) : (
                       <>
                         <Ionicons name="sparkles-outline" size={13} color={GREEN} />
@@ -962,7 +1548,11 @@ export default function TeacherMaterialsScreen() {
                 ]}
               >
                 {saving ? (
-                  <ActivityIndicator size="small" color={GREEN} />
+                  <ProgressIndicator
+                    size="sm"
+                    color={GREEN}
+                    accessibilityLabel="Saving material"
+                  />
                 ) : (
                   <Text style={styles.secondaryButtonText}>
                     {editingId ? "Save Changes" : "Save as Draft"}
@@ -994,6 +1584,15 @@ export default function TeacherMaterialsScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
+  },
   bigIcon: {
     width: 58,
     height: 58,
@@ -1046,7 +1645,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.textPrimary,
   },
-  filterRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
+  filterRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+    flexWrap: "wrap",
+  },
   filterChip: {
     paddingHorizontal: spacing.lg - 1,
     paddingVertical: spacing.sm,
@@ -1087,6 +1691,92 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.textMuted,
   },
+  fileBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm + 2,
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  selectedFileBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm + 2,
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  fileIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fileText: { flex: 1, minWidth: 0, gap: 2 },
+  fileName: { fontSize: 12, fontWeight: "800", color: colors.textPrimary },
+  fileMeta: { fontSize: 11, color: colors.textMuted },
+  extractionText: { fontSize: 11, fontWeight: "700", color: colors.textMuted },
+  extractionReady: { color: colors.success },
+  extractionFailed: { color: colors.danger },
+  extractionError: {
+    fontSize: 10,
+    lineHeight: 14,
+    color: colors.danger,
+    marginTop: 2,
+  },
+  retryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+    backgroundColor: colors.surface,
+  },
+  retryText: { fontSize: 10, fontWeight: "800", color: GREEN },
+  removeFileButton: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.sm,
+    backgroundColor: colors.dangerBg,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chooseFileButton: {
+    minHeight: 52,
+    borderWidth: 1.5,
+    borderStyle: "dashed",
+    borderColor: colors.borderStrong,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceAlt,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  chooseFileText: { fontSize: 13, fontWeight: "800", color: GREEN },
+  replaceFileButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    alignSelf: "flex-start",
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primarySoft,
+  },
+  replaceFileText: { fontSize: 11, fontWeight: "800", color: GREEN },
   cardDate: { fontSize: 11, color: colors.textFaint },
   cardActions: {
     flexDirection: "row",

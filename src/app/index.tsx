@@ -1,23 +1,29 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { useRouter } from "expo-router";
-import { useEffect } from "react";
-import {
-  ActivityIndicator,
-  Image,
-  StatusBar,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { useEffect, useState } from "react";
+import { Image, StatusBar, StyleSheet, Text, View } from "react-native";
+
+const SPLASH_DURATION_MS = 3500;
 
 export default function Index() {
   const router = useRouter();
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
+    const startedAt = Date.now();
     const timer = setTimeout(() => {
       router.replace("/login");
-    }, 3500);
+    }, SPLASH_DURATION_MS);
+    const progressTimer = setInterval(() => {
+      setProgress(
+        Math.min(1, (Date.now() - startedAt) / SPLASH_DURATION_MS),
+      );
+    }, 100);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(progressTimer);
+    };
   }, [router]);
 
   return (
@@ -49,7 +55,12 @@ export default function Index() {
         </Text>
 
         <View style={styles.loading}>
-          <ActivityIndicator size="small" color="#B8F28B" />
+          <ProgressIndicator
+            size="md"
+            color="#B8F28B"
+            progress={progress}
+            accessibilityLabel="Preparing your study space"
+          />
           <Text style={styles.loadingText}>Preparing your study space...</Text>
         </View>
       </View>

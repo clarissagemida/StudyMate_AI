@@ -3,7 +3,11 @@ import {
   requireApprovedRole,
 } from "../_shared/auth.ts";
 import { MAX_MESSAGE_CHARS, sanitizeHistory } from "../_shared/chat.ts";
-import { callGemini, embedText } from "../_shared/gemini.ts";
+import {
+  callGemini,
+  DEFAULT_GEMINI_FALLBACK_MODEL,
+  embedText,
+} from "../_shared/gemini.ts";
 import { handlePreflight, json, readJsonBody } from "../_shared/http.ts";
 import { loadAiSettings } from "../_shared/settings.ts";
 import {
@@ -21,7 +25,7 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 
 const GROUNDING_MATCH_COUNT = 4;
-const MAX_CONTEXT_CHARS = 4000;
+const MAX_CONTEXT_CHARS = 8000;
 
 const SYSTEM_PROMPT = `
 You are StudyMate AI, a friendly study assistant for students.
@@ -229,6 +233,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     systemInstruction,
     maxOutputTokens: 2048,
     thinkingLevel: "low",
+    fallbackModel: DEFAULT_GEMINI_FALLBACK_MODEL,
+    maxAttempts: 4,
+    retryDelayMs: 800,
+    timeoutMs: 90000,
   });
 
   if (!result.ok) {

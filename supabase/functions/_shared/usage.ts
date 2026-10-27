@@ -1,14 +1,16 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export const DAILY_LIMITS = {
-  student: 30,
-  teacher: 20,
+  student: 100,
+  teacher: 150,
 } as const;
 
 export type AiFeature =
   | "study_buddy"
   | "teacher_generator"
-  | "materials_index";
+  | "materials_index"
+  | "materials_extract"
+  | "student_practice";
 
 export function utcDayStart(now: Date = new Date()): Date {
   return new Date(

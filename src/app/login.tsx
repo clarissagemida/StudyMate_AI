@@ -1,16 +1,19 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
-import { setAppLocked } from "@/utils/appLock";
+import { verifyAccountAndNavigate } from "@/utils/accountAccess";
 import { authenticateWithBiometrics } from "@/utils/biometrics";
-import { confirmAction, showNotice } from "@/utils/notify";
+import { showNotice } from "@/utils/notify";
+import {
+  completeOAuthCallback,
+  describeGoogleAuthError,
+  getOAuthRedirectUrl,
+} from "@/utils/oauthCallback";
 import { Ionicons } from "@expo/vector-icons";
-import type { User } from "@supabase/supabase-js";
-import { makeRedirectUri } from "expo-auth-session";
 import { Image as ExpoImage } from "expo-image";
 import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -41,11 +44,25 @@ export default function LoginScreen() {
     if (loading !== null) return;
     setLoading("google");
 
+    const redirectTo = getOAuthRedirectUrl();
+
     try {
-      const redirectTo = makeRedirectUri({
-        scheme: "studymateai",
-      });
-      // showNotice("Google Redirect URL", redirectTo);
+      // On the web the browser itself navigates to Google and then returns to
+      // /auth/callback, where the code is exchanged for a session.
+      if (Platform.OS === "web") {
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo,
+            queryParams: { prompt: "select_account" },
+            scopes: "email profile",
+          },
+        });
+
+        if (error) throw error;
+        return;
+      }
+
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -57,8 +74,9 @@ export default function LoginScreen() {
       });
 
       if (error) throw error;
-      if (!data?.url)
+      if (!data?.url) {
         throw new Error("Supabase did not return a Google sign-in URL.");
+      }
 
       const result = await WebBrowser.openAuthSessionAsync(
         data.url,
@@ -75,186 +93,16 @@ export default function LoginScreen() {
         throw new Error("Google sign-in was not completed. Please try again.");
       }
 
-      const callbackUrl = new URL(result.url);
-      const authError =
-        callbackUrl.searchParams.get("error_description") ??
-        callbackUrl.searchParams.get("error") ??
-        callbackUrl.searchParams.get("message");
+      // Google has already verified the identity behind this address, so the
+      // email-code gate is skipped while profile/approval checks still apply.
+      const user = await completeOAuthCallback(result.url);
 
-      if (authError) throw new Error(authError);
-
-      const code = callbackUrl.searchParams.get("code");
-      if (code) {
-        const { data: sessionData, error: exchangeError } =
-          await supabase.auth.exchangeCodeForSession(code);
-        if (exchangeError) throw exchangeError;
-        if (!sessionData.user)
-          throw new Error("Google sign-in returned no user.");
-        // Google has already verified the provider identity. Continue to
-        // profile/approval checks without requesting the password-login code.
-        await verifyAccountAndNavigate(sessionData.user, {
-          requireEmailCode: false,
-        });
-        return;
-      }
-
-      // Some OAuth responses return tokens in the URL fragment.
-      const fragment = new URLSearchParams(callbackUrl.hash.replace(/^#/, ""));
-      const accessToken = fragment.get("access_token");
-      const refreshToken = fragment.get("refresh_token");
-      if (accessToken && refreshToken) {
-        const { data: sessionData, error: sessionError } =
-          await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-        if (sessionError) throw sessionError;
-        if (!sessionData.user)
-          throw new Error("Google sign-in returned no user.");
-        await verifyAccountAndNavigate(sessionData.user, {
-          requireEmailCode: false,
-        });
-        return;
-      }
-
-      console.error("Google callback URL:", result.url);
-      throw new Error(
-        "Could not complete the Google sign-in callback. Check your redirect URL settings.",
-      );
+      await verifyAccountAndNavigate(user, { trustedProvider: true });
     } catch (error) {
-      console.error("Google sign-in error:", error);
-      showNotice(
-        "Google Sign-In Failed",
-        error instanceof Error ? error.message : "Please try again.",
-      );
+      console.error("Google sign-in error:", error, { redirectTo });
+      showNotice("Google Sign-In Failed", describeGoogleAuthError(error));
     } finally {
       setLoading(null);
-    }
-  };
-
-  // Verify the account before opening any dashboard.
-  const verifyAccountAndNavigate = async (
-    user: User,
-    options: { requireEmailCode?: boolean } = {},
-  ) => {
-    try {
-      // Supabase Auth is the sole source of truth for email verification.
-      // An unconfirmed account must not reach protected features; send the
-      // user to the verification screen instead. No local flag is trusted.
-      if (!user.email_confirmed_at) {
-        await supabase.auth.signOut();
-
-        const targetEmail = (user.email ?? "").trim().toLowerCase();
-
-        confirmAction(
-          "Email Not Verified",
-          "Please verify your email address before signing in. We can send a new code.",
-          () => {
-            router.replace({
-              pathname: "/verify-email",
-              params: {
-                ...(targetEmail ? { email: targetEmail } : {}),
-                userId: user.id,
-              },
-            });
-          },
-          { confirmLabel: "Verify Email", cancelLabel: "Cancel" },
-        );
-        return;
-      }
-
-      const userId = user.id;
-
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("role, approval_status")
-        .eq("id", userId)
-        .maybeSingle();
-
-      if (profileError) {
-        // The session was already created by the caller; drop it so a failed
-        // verification never leaves a half-authenticated state behind.
-        await supabase.auth.signOut();
-
-        showNotice(
-          "Connection Error",
-          "We couldn't verify your account. Check your internet connection and try again.",
-        );
-        return;
-      }
-
-      if (!profile) {
-        await supabase.auth.signOut();
-
-        showNotice(
-          "Profile Error",
-          "We couldn't find your StudyMate profile. Please contact the administrator.",
-        );
-        return;
-      }
-
-      if (profile.approval_status !== "approved") {
-        // Pending or rejected accounts must not retain an authenticated session.
-        await supabase.auth.signOut();
-
-        if (profile.approval_status === "rejected") {
-          showNotice(
-            "Registration Not Approved",
-            "Your registration was not approved. Please contact the administrator for assistance.",
-          );
-        } else {
-          showNotice(
-            "Account Pending Approval",
-            "Your account is waiting for administrator approval. You can sign in after it has been approved.",
-          );
-        }
-
-        return;
-      }
-      if (options.requireEmailCode !== false) {
-        // Password login: proceed to dashboard after checks pass.
-      }
-
-      // Session verified: unlock app and route by role.
-      setAppLocked(false);
-
-      switch (profile.role) {
-        case "student":
-          router.replace("/student");
-          break;
-
-        case "teacher":
-          router.replace("/teacher");
-          break;
-
-        case "admin":
-          router.replace("/admin/home");
-          break;
-
-        default:
-          await supabase.auth.signOut();
-
-          showNotice(
-            "Invalid Role",
-            "Your account role could not be verified. Please contact the administrator.",
-          );
-      }
-    } catch (error) {
-      console.error("Account verification error:", error);
-
-      try {
-        await supabase.auth.signOut();
-      } catch (signOutError) {
-        console.error(
-          "Sign out after verification error failed:",
-          signOutError,
-        );
-      }
-
-      showNotice(
-        "Verification Error",
-        "We couldn't verify your account. Please try again.",
-      );
     }
   };
 
@@ -353,7 +201,7 @@ export default function LoginScreen() {
       }
 
       // 4. Recheck the user's role and approval status.
-      await verifyAccountAndNavigate(verifiedUser, { requireEmailCode: false });
+      await verifyAccountAndNavigate(verifiedUser, { trustedProvider: true });
     } catch {
       showNotice(
         "Biometric Login Error",
@@ -422,7 +270,11 @@ export default function LoginScreen() {
                   accessibilityLabel="Continue with Google"
                 >
                   {loading === "google" ? (
-                    <ActivityIndicator color="#176B45" />
+                    <ProgressIndicator
+                      size="sm"
+                      color="#176B45"
+                      accessibilityLabel="Connecting to Google"
+                    />
                   ) : (
                     <>
                       <ExpoImage
@@ -438,6 +290,10 @@ export default function LoginScreen() {
                   )}
                 </Pressable>
 
+                <Text style={styles.googleHint}>
+                  {"You'll confirm your Google account before continuing."}
+                </Text>
+
                 <Pressable
                   style={({ pressed }) => [
                     styles.biometricButton,
@@ -450,7 +306,11 @@ export default function LoginScreen() {
                   accessibilityLabel="Unlock with biometrics"
                 >
                   {loading === "biometric" ? (
-                    <ActivityIndicator color="#176B45" />
+                    <ProgressIndicator
+                      size="sm"
+                      color="#176B45"
+                      accessibilityLabel="Unlocking with biometrics"
+                    />
                   ) : (
                     <>
                       <Ionicons name="finger-print" size={27} color="#176B45" />
@@ -580,7 +440,11 @@ export default function LoginScreen() {
                   accessibilityLabel="Sign in with email and password"
                 >
                   {loading === "password" ? (
-                    <ActivityIndicator color="#FFFFFF" />
+                    <ProgressIndicator
+                      size="sm"
+                      color="#FFFFFF"
+                      accessibilityLabel="Signing in"
+                    />
                   ) : (
                     <>
                       <Text style={styles.signInText}>Sign In</Text>
@@ -730,6 +594,14 @@ const styles = StyleSheet.create({
     color: "#294638",
     fontSize: 14,
     fontWeight: "700",
+  },
+  googleHint: {
+    color: "#849087",
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: "center",
+    marginTop: -4,
+    paddingHorizontal: 12,
   },
   separator: {
     flexDirection: "row",

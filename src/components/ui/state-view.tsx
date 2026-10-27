@@ -1,22 +1,19 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { ComponentProps, ReactNode } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
 
 type StateViewProps = {
-  /** "loading" shows a spinner; "error"/"empty" show an icon badge. */
+  /** "loading" shows a progress bar; "error"/"empty" show an icon badge. */
   variant: "loading" | "error" | "empty";
   title?: string;
   message?: string;
   icon?: IoniconName;
+  /** Completion from 0 to 1 when it is known; otherwise indeterminate. */
+  progress?: number | null;
   /** Optional retry button (used by error + empty states). */
   onRetry?: () => void;
   retryLabel?: string;
@@ -33,6 +30,7 @@ export function StateView({
   title,
   message,
   icon,
+  progress,
   onRetry,
   retryLabel = "Try Again",
   children,
@@ -40,7 +38,11 @@ export function StateView({
   if (variant === "loading") {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.primary} />
+        <ProgressIndicator
+          size="lg"
+          progress={progress}
+          accessibilityLabel={title ?? "Loading"}
+        />
         {title ? <Text style={styles.title}>{title}</Text> : null}
         {message ? <Text style={styles.message}>{message}</Text> : null}
         {children}

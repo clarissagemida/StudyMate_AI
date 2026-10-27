@@ -1,8 +1,9 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { Redirect } from "expo-router";
 import type { Href } from "expo-router";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text } from "react-native";
+import { StyleSheet, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const PRIMARY = "#176B45";
@@ -79,7 +80,11 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={[styles.container, styles.center]}>
-      <ActivityIndicator size="large" color={PRIMARY} />
+      <ProgressIndicator
+        size="lg"
+        color={PRIMARY}
+        accessibilityLabel="Loading your dashboard"
+      />
       <Text style={styles.loadingText}>Loading your dashboard...</Text>
     </SafeAreaView>
   );

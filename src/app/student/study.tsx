@@ -1,11 +1,17 @@
 import { MaterialReader } from "@/components/material-reader";
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
+import {
+  downloadMaterialFile,
+  formatMaterialFileSize,
+  materialFileKind,
+  openMaterialFile,
+} from "@/utils/materialFiles";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   RefreshControl,
@@ -28,9 +34,14 @@ type Material = {
   description: string | null;
   created_at: string;
   content?: string | null;
+  file_path?: string | null;
+  file_name?: string | null;
+  file_mime?: string | null;
+  file_size?: number | null;
 };
 
 type LoadMode = "initial" | "refresh";
+type FileAction = "open" | "download";
 
 // PostgREST error codes for a table that has not been created yet.
 function isMissingRelation(
@@ -46,6 +57,19 @@ function isMissingRelation(
   );
 }
 
+function isMissingColumn(
+  error: { code?: string; message?: string } | null,
+): boolean {
+  if (!error) return false;
+  if (error.code === "42703" || error.code === "PGRST204") return true;
+
+  const message = (error.message ?? "").toLowerCase();
+  return (
+    message.includes("column") &&
+    (message.includes("does not exist") || message.includes("could not find"))
+  );
+}
+
 export default function StudentStudyScreen() {
   const [items, setItems] = useState<Material[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -56,6 +80,7 @@ export default function StudentStudyScreen() {
   const [readerMaterial, setReaderMaterial] = useState<Material | null>(null);
   const [readerVisible, setReaderVisible] = useState(false);
   const [readerLoading, setReaderLoading] = useState(false);
+  const [fileBusy, setFileBusy] = useState<FileAction | null>(null);
 
   const loadMaterials = useCallback(async (mode: LoadMode) => {
     if (mode === "refresh") setRefreshing(true);
@@ -71,11 +96,27 @@ export default function StudentStudyScreen() {
         return;
       }
 
-      const { data, error } = await supabase
+      const baseColumns = "id, title, subject, topic, description, created_at";
+      let data: unknown = null;
+      let error: { code?: string; message?: string } | null = null;
+
+      const withFiles = await supabase
         .from("materials")
-        .select("id, title, subject, topic, description, created_at")
+        .select(`${baseColumns}, file_path, file_name, file_mime, file_size`)
         .eq("status", "published")
         .order("created_at", { ascending: false });
+      data = withFiles.data;
+      error = withFiles.error;
+
+      if (isMissingColumn(withFiles.error)) {
+        const fallback = await supabase
+          .from("materials")
+          .select(baseColumns)
+          .eq("status", "published")
+          .order("created_at", { ascending: false });
+        data = fallback.data;
+        error = fallback.error;
+      }
 
       if (isMissingRelation(error)) {
         setTableMissing(true);
@@ -87,7 +128,7 @@ export default function StudentStudyScreen() {
       if (error) throw new Error(error.message);
 
       setTableMissing(false);
-      setItems((data ?? []) as Material[]);
+      setItems((Array.isArray(data) ? data : []) as Material[]);
       setLoadError(null);
     } catch (err) {
       const message =
@@ -138,6 +179,7 @@ export default function StudentStudyScreen() {
   const closeReader = useCallback(() => {
     setReaderVisible(false);
     setReaderLoading(false);
+    setFileBusy(null);
   }, []);
 
   // The list only carries summary fields, so the full lesson text is fetched
@@ -149,28 +191,39 @@ export default function StudentStudyScreen() {
       setReaderLoading(true);
 
       try {
-        const { data, error } = await supabase
-          .from("materials")
-          .select("id, title, subject, topic, description, content, created_at")
-          .eq("id", item.id)
-          .eq("status", "published")
-          .maybeSingle();
+        const baseColumns = "id, title, subject, topic, description, created_at";
+        const variants = [
+          `${baseColumns}, content, file_path, file_name, file_mime, file_size`,
+          `${baseColumns}, content`,
+          `${baseColumns}, file_path, file_name, file_mime, file_size`,
+          baseColumns,
+        ];
 
-        let row: Record<string, unknown> | null = data;
+        let row: Record<string, unknown> | null = null;
+        let lastError: { code?: string; message?: string } | null = null;
 
-        if (error) {
-          // ai_grounding.sql adds materials.content. Until it runs, open the
-          // lesson with its description instead of failing outright.
-          const { data: fallback, error: fallbackError } = await supabase
+        for (const columns of variants) {
+          const { data, error } = await supabase
             .from("materials")
-            .select("id, title, subject, topic, description, created_at")
+            .select(columns)
             .eq("id", item.id)
             .eq("status", "published")
             .maybeSingle();
 
-          if (fallbackError) throw new Error(fallbackError.message);
-          row = fallback;
+          if (!error) {
+            row = data as Record<string, unknown> | null;
+            lastError = null;
+            break;
+          }
+
+          lastError = error;
+
+          if (!isMissingColumn(error)) {
+            throw new Error(error.message);
+          }
         }
+
+        if (lastError) throw new Error(lastError.message);
 
         if (!row) {
           closeReader();
@@ -190,6 +243,14 @@ export default function StudentStudyScreen() {
             typeof row.description === "string" ? row.description : null,
           created_at: String(row.created_at ?? ""),
           content: typeof row.content === "string" ? row.content : "",
+          file_path:
+            typeof row.file_path === "string" ? row.file_path : null,
+          file_name:
+            typeof row.file_name === "string" ? row.file_name : null,
+          file_mime:
+            typeof row.file_mime === "string" ? row.file_mime : null,
+          file_size:
+            typeof row.file_size === "number" ? row.file_size : null,
         });
       } catch (err) {
         closeReader();
@@ -204,10 +265,56 @@ export default function StudentStudyScreen() {
     [closeReader],
   );
 
+  const handleOpenFile = useCallback(async () => {
+    const filePath = readerMaterial?.file_path;
+
+    if (!filePath || fileBusy) return;
+
+    setFileBusy("open");
+
+    try {
+      await openMaterialFile(filePath);
+    } catch (err) {
+      showNotice(
+        "Unable to open file",
+        err instanceof Error ? err.message : "Please try again.",
+      );
+    } finally {
+      setFileBusy(null);
+    }
+  }, [readerMaterial, fileBusy]);
+
+  const handleDownloadFile = useCallback(async () => {
+    const filePath = readerMaterial?.file_path;
+
+    if (!filePath || fileBusy) return;
+
+    setFileBusy("download");
+
+    try {
+      await downloadMaterialFile({
+        filePath,
+        fileName: readerMaterial?.file_name || "material",
+        mimeType: readerMaterial?.file_mime || "application/octet-stream",
+      });
+    } catch (err) {
+      showNotice(
+        "Download failed",
+        err instanceof Error ? err.message : "Please try again.",
+      );
+    } finally {
+      setFileBusy(null);
+    }
+  }, [readerMaterial, fileBusy]);
+
   if (loading && items === null) {
     return (
       <SafeAreaView style={styles.center} edges={["top"]}>
-        <ActivityIndicator size="large" color={GREEN} />
+        <ProgressIndicator
+          size="lg"
+          color={GREEN}
+          accessibilityLabel="Loading study materials"
+        />
         <Text style={styles.centerText}>Loading study materials...</Text>
       </SafeAreaView>
     );
@@ -244,6 +351,13 @@ export default function StudentStudyScreen() {
         </Text>
       </View>
 
+      {refreshing ? (
+        <ProgressIndicator
+          style={styles.refreshProgress}
+          accessibilityLabel="Refreshing study materials"
+        />
+      ) : null}
+
       <FlatList
         data={visibleItems}
         keyExtractor={(item) => item.id}
@@ -255,8 +369,9 @@ export default function StudentStudyScreen() {
             onRefresh={() => {
               void loadMaterials("refresh");
             }}
-            tintColor={GREEN}
-            colors={[GREEN]}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
           />
         }
         ListHeaderComponent={
@@ -318,7 +433,11 @@ export default function StudentStudyScreen() {
           >
             <View style={styles.cardTop}>
               <View style={styles.cardIcon}>
-                <Ionicons name="document-text-outline" size={20} color={GREEN} />
+                <Ionicons
+                  name={item.file_path ? "document-attach-outline" : "document-text-outline"}
+                  size={20}
+                  color={GREEN}
+                />
               </View>
 
               <View style={styles.cardText}>
@@ -329,6 +448,12 @@ export default function StudentStudyScreen() {
                   {item.subject}
                   {item.topic ? ` · ${item.topic}` : ""}
                 </Text>
+                {item.file_mime ? (
+                  <Text style={styles.cardFileMeta} numberOfLines={1}>
+                    {materialFileKind(item.file_mime)} ·{" "}
+                    {formatMaterialFileSize(item.file_size ?? 0)}
+                  </Text>
+                ) : null}
               </View>
 
               <Ionicons name="chevron-forward" size={18} color="#9AA69E" />
@@ -353,6 +478,19 @@ export default function StudentStudyScreen() {
         visible={readerVisible}
         loading={readerLoading}
         onClose={closeReader}
+        file={
+          readerMaterial?.file_path
+            ? {
+                name: readerMaterial.file_name || "Attached file",
+                meta: `${materialFileKind(readerMaterial.file_mime ?? "")} · ${formatMaterialFileSize(readerMaterial.file_size ?? 0)}`,
+              }
+            : null
+        }
+        onOpenFile={readerMaterial?.file_path ? handleOpenFile : undefined}
+        onDownloadFile={
+          readerMaterial?.file_path ? handleDownloadFile : undefined
+        }
+        fileAction={fileBusy}
       />
     </SafeAreaView>
   );
@@ -360,6 +498,15 @@ export default function StudentStudyScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  refreshProgress: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: 3,
+    borderRadius: 0,
+    zIndex: 10,
+  },
   center: {
     flex: 1,
     backgroundColor: BG,
@@ -454,6 +601,7 @@ const styles = StyleSheet.create({
   cardText: { flex: 1 },
   cardTitle: { fontSize: 15, fontWeight: "800", color: DARK_GREEN },
   cardMeta: { fontSize: 12, color: "#65776B", marginTop: 4 },
+  cardFileMeta: { fontSize: 11, color: GREEN, marginTop: 3, fontWeight: "700" },
   cardDescription: {
     fontSize: 12,
     lineHeight: 18,

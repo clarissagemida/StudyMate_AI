@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { useRequireRole } from "@/hooks/useRequireRole";
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
@@ -7,7 +8,6 @@ import { router, usePathname } from "expo-router";
 import { Drawer } from "expo-router/drawer";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   Pressable,
   ScrollView,
@@ -382,7 +382,11 @@ function AdminDrawerContent() {
           ]}
         >
           {signingOut ? (
-            <ActivityIndicator size="small" color="#D64545" />
+            <ProgressIndicator
+              size="sm"
+              color="#D64545"
+              accessibilityLabel="Logging out"
+            />
           ) : (
             <Ionicons name="log-out-outline" size={21} color="#D64545" />
           )}
@@ -409,7 +413,12 @@ export default function AdminLayout() {
           <Ionicons name="shield-checkmark" size={30} color="#FFFFFF" />
         </View>
 
-        <ActivityIndicator size="large" color={GREEN} style={styles.spinner} />
+        <ProgressIndicator
+          size="lg"
+          color={GREEN}
+          style={styles.guardProgress}
+          accessibilityLabel="Verifying administrator access"
+        />
 
         <Text style={styles.checkingText}>
           Verifying administrator access...
@@ -561,7 +570,7 @@ const styles = StyleSheet.create({
   deniedBadge: {
     backgroundColor: "#B33A3A",
   },
-  spinner: {
+  guardProgress: {
     marginTop: 10,
   },
   checkingText: {

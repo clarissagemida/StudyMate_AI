@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
@@ -6,7 +7,6 @@ import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -826,7 +826,11 @@ export default function RegisterScreen() {
               >
                 {loading ? (
                   <>
-                    <ActivityIndicator color="#FFFFFF" />
+                    <ProgressIndicator
+                      size="sm"
+                      color="#FFFFFF"
+                      accessibilityLabel="Creating account"
+                    />
                     <Text style={styles.registerButtonText}>
                       Creating account...
                     </Text>

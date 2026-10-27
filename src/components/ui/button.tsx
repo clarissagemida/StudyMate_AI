@@ -1,7 +1,7 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { colors, radius, spacing, text } from "@/theme/tokens";
 import { ReactNode } from "react";
 import {
-  ActivityIndicator,
   ColorValue,
   Pressable,
   StyleSheet,
@@ -16,22 +16,22 @@ type ButtonProps = {
   onPress: () => void;
   variant?: Variant;
   disabled?: boolean;
-  /** Replace the label with a spinner while an action is running. */
+  /** Replace the label with a progress bar while an action is running. */
   loading?: boolean;
   left?: ReactNode;
   style?: ViewStyle | ViewStyle[];
   accessibilityLabel?: string;
 };
 
-// Plain data (not a StyleSheet) so the spinner colour stays a ColorValue.
+// Plain data (not a StyleSheet) so the progress colour stays a ColorValue.
 const variants: Record<
   Variant,
-  { container: ViewStyle; labelColor: ColorValue; spinner: ColorValue }
+  { container: ViewStyle; labelColor: ColorValue; progressColor: ColorValue }
 > = {
   primary: {
     container: { backgroundColor: colors.primary },
     labelColor: "#FFFFFF",
-    spinner: "#FFFFFF",
+    progressColor: "#FFFFFF",
   },
   secondary: {
     container: {
@@ -40,17 +40,17 @@ const variants: Record<
       borderColor: colors.primary,
     },
     labelColor: colors.primary,
-    spinner: colors.primary,
+    progressColor: colors.primary,
   },
   ghost: {
     container: { backgroundColor: "transparent" },
     labelColor: colors.primary,
-    spinner: colors.primary,
+    progressColor: colors.primary,
   },
   danger: {
     container: { backgroundColor: colors.danger },
     labelColor: "#FFFFFF",
-    spinner: "#FFFFFF",
+    progressColor: "#FFFFFF",
   },
 };
 
@@ -84,7 +84,11 @@ export function Button({
       ]}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={v.spinner} />
+        <ProgressIndicator
+          size="sm"
+          color={v.progressColor}
+          accessibilityLabel={`${label} in progress`}
+        />
       ) : (
         <>
           {left}

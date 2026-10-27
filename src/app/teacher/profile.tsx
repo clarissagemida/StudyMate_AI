@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { deleteAccount } from "@/utils/deleteAccount";
@@ -10,7 +11,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -30,18 +30,49 @@ type TeacherProfile = {
   full_name: string | null;
   approval_status: string | null;
   avatar_path: string | null;
+  department?: string | null;
+  subjects?: string | null;
+  bio?: string | null;
+};
+
+type TeachingProfileForm = {
+  department: string;
+  subjects: string;
+  bio: string;
 };
 
 type WorkingState = "photo" | "signingOut" | "deleting" | null;
+
+function isMissingColumn(
+  error: { code?: string; message?: string } | null,
+): boolean {
+  if (!error) return false;
+  if (error.code === "42703" || error.code === "PGRST204") return true;
+
+  const message = (error.message ?? "").toLowerCase();
+  return (
+    message.includes("column") &&
+    (message.includes("does not exist") || message.includes("could not find"))
+  );
+}
 
 export default function TeacherProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarFailed, setAvatarFailed] = useState(false);
+
+  const [profileFieldsReady, setProfileFieldsReady] = useState(true);
+  const [teachingForm, setTeachingForm] = useState<TeachingProfileForm>({
+    department: "",
+    subjects: "",
+    bio: "",
+  });
+  const [savingTeaching, setSavingTeaching] = useState(false);
 
   const [working, setWorking] = useState<WorkingState>(null);
 
@@ -84,13 +115,32 @@ export default function TeacherProfileScreen() {
         return;
       }
 
+      setUserId(user.id);
       setEmail(user.email ?? "");
 
-      const { data, error } = await supabase
+      const baseColumns = "full_name, approval_status, avatar_path";
+      let data: unknown = null;
+      let error: { code?: string; message?: string } | null = null;
+      let fieldsReady = true;
+
+      const primary = await supabase
         .from("profiles")
-        .select("full_name, approval_status, avatar_path")
+        .select(`${baseColumns}, department, subjects, bio`)
         .eq("id", user.id)
         .maybeSingle();
+      data = primary.data;
+      error = primary.error;
+
+      if (isMissingColumn(primary.error)) {
+        fieldsReady = false;
+        const fallback = await supabase
+          .from("profiles")
+          .select(baseColumns)
+          .eq("id", user.id)
+          .maybeSingle();
+        data = fallback.data;
+        error = fallback.error;
+      }
 
       if (error) throw error;
 
@@ -98,9 +148,18 @@ export default function TeacherProfileScreen() {
         full_name: null,
         approval_status: null,
         avatar_path: null,
+        department: "",
+        subjects: "",
+        bio: "",
       }) as TeacherProfile;
 
       setProfile(row);
+      setProfileFieldsReady(fieldsReady);
+      setTeachingForm({
+        department: row.department ?? "",
+        subjects: row.subjects ?? "",
+        bio: row.bio ?? "",
+      });
       setAvatarFailed(false);
       setLoadError(null);
 
@@ -153,6 +212,66 @@ export default function TeacherProfileScreen() {
       showNotice("Photo Upload Failed", message);
     } finally {
       setWorking(null);
+    }
+  };
+
+  const handleSaveTeachingProfile = async () => {
+    if (savingTeaching || isWorking) return;
+
+    if (!profileFieldsReady) {
+      showNotice(
+        "Profile Setup Missing",
+        "Run supabase/teacher_features.sql before editing these fields.",
+      );
+      return;
+    }
+
+    if (!userId) {
+      showNotice("Save Failed", "Your account could not be verified.");
+      return;
+    }
+
+    const department = teachingForm.department.trim();
+    const subjects = teachingForm.subjects.trim();
+    const bio = teachingForm.bio.trim();
+
+    if (department.length > 120) {
+      showNotice("Save Failed", "Department must be 120 characters or fewer.");
+      return;
+    }
+
+    if (subjects.length > 200) {
+      showNotice("Save Failed", "Subjects must be 200 characters or fewer.");
+      return;
+    }
+
+    if (bio.length > 500) {
+      showNotice("Save Failed", "Bio must be 500 characters or fewer.");
+      return;
+    }
+
+    setSavingTeaching(true);
+
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ department, subjects, bio })
+        .eq("id", userId);
+
+      if (error) throw error;
+
+      setProfile((current) =>
+        current ? { ...current, department, subjects, bio } : current,
+      );
+      setTeachingForm({ department, subjects, bio });
+      showNotice("Profile Updated", "Your teaching profile has been saved.");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Please try again.";
+      console.error("Teacher profile save error:", err);
+      showNotice("Save Failed", message);
+    } finally {
+      setSavingTeaching(false);
     }
   };
 
@@ -389,7 +508,11 @@ export default function TeacherProfileScreen() {
             ]}
           >
             {uploadingPhoto ? (
-              <ActivityIndicator size="small" color={GREEN} />
+              <ProgressIndicator
+                size="sm"
+                color={GREEN}
+                accessibilityLabel="Uploading profile photo"
+              />
             ) : (
               <Ionicons name="camera-outline" size={17} color={GREEN} />
             )}
@@ -433,6 +556,101 @@ export default function TeacherProfileScreen() {
           changed from this screen.
         </Text>
 
+        <Text style={styles.sectionTitle}>Teaching Profile</Text>
+
+        {profileFieldsReady ? (
+          <View style={styles.formCard}>
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Department</Text>
+              <TextInput
+                value={teachingForm.department}
+                onChangeText={(department) =>
+                  setTeachingForm((current) => ({ ...current, department }))
+                }
+                placeholder="e.g. College of Computer Studies"
+                placeholderTextColor="#9BA69F"
+                maxLength={120}
+                autoCapitalize="words"
+                style={styles.profileInput}
+                accessibilityLabel="Department"
+              />
+            </View>
+
+            <View style={styles.divider} />
+
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Subjects</Text>
+              <TextInput
+                value={teachingForm.subjects}
+                onChangeText={(subjects) =>
+                  setTeachingForm((current) => ({ ...current, subjects }))
+                }
+                placeholder="e.g. Mathematics, Physics"
+                placeholderTextColor="#9BA69F"
+                maxLength={200}
+                autoCapitalize="words"
+                style={styles.profileInput}
+                accessibilityLabel="Subjects"
+              />
+            </View>
+
+            <View style={styles.divider} />
+
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Bio</Text>
+              <TextInput
+                value={teachingForm.bio}
+                onChangeText={(bio) =>
+                  setTeachingForm((current) => ({ ...current, bio }))
+                }
+                placeholder="A short introduction for your students"
+                placeholderTextColor="#9BA69F"
+                maxLength={500}
+                multiline
+                textAlignVertical="top"
+                style={[styles.profileInput, styles.profileTextarea]}
+                accessibilityLabel="Teaching bio"
+              />
+            </View>
+
+            <Pressable
+              onPress={() => void handleSaveTeachingProfile()}
+              disabled={savingTeaching || isWorking}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.saveProfileButton,
+                pressed && styles.pressed,
+                (savingTeaching || isWorking) && styles.disabled,
+              ]}
+            >
+              {savingTeaching ? (
+                <ProgressIndicator
+                  size="sm"
+                  color="#FFFFFF"
+                  accessibilityLabel="Saving teaching profile"
+                />
+              ) : (
+                <Ionicons name="save-outline" size={17} color="#FFFFFF" />
+              )}
+              <Text style={styles.saveProfileText}>
+                {savingTeaching ? "Saving..." : "Save Teaching Profile"}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.noticeCard}>
+            <Ionicons
+              name="information-circle-outline"
+              size={18}
+              color={GREEN}
+            />
+            <Text style={styles.noticeText}>
+              Run supabase/teacher_features.sql in the Supabase SQL editor to
+              add editable department, subjects, and bio fields.
+            </Text>
+          </View>
+        )}
+
         {/* Actions */}
         <Text style={styles.sectionTitle}>Security</Text>
 
@@ -468,7 +686,11 @@ export default function TeacherProfileScreen() {
           ]}
         >
           {signingOut ? (
-            <ActivityIndicator size="small" color="#C53030" />
+            <ProgressIndicator
+              size="sm"
+              color="#C53030"
+              accessibilityLabel="Logging out"
+            />
           ) : (
             <Ionicons name="log-out-outline" size={20} color="#C53030" />
           )}
@@ -596,7 +818,11 @@ export default function TeacherProfileScreen() {
                 ]}
               >
                 {deleting ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <ProgressIndicator
+                    size="sm"
+                    color="#FFFFFF"
+                    accessibilityLabel="Deleting account"
+                  />
                 ) : (
                   <Text style={styles.modalDeleteText}>Delete Forever</Text>
                 )}
@@ -697,6 +923,38 @@ const styles = StyleSheet.create({
   field: { paddingVertical: 13, gap: 4 },
   fieldLabel: { fontSize: 11, fontWeight: "700", color: "#87948B" },
   fieldValue: { fontSize: 14, color: "#20392B" },
+  profileInput: {
+    borderWidth: 1,
+    borderColor: "#DDE7E0",
+    borderRadius: 10,
+    backgroundColor: "#FAFCFA",
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    fontSize: 13,
+    color: "#20392B",
+    minHeight: 44,
+  },
+  profileTextarea: { minHeight: 88 },
+  saveProfileButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: GREEN,
+    borderRadius: 12,
+    minHeight: 46,
+    marginVertical: 14,
+  },
+  saveProfileText: { fontSize: 13, fontWeight: "800", color: "#FFFFFF" },
+  noticeCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    backgroundColor: colors.primarySoft,
+    borderRadius: 14,
+    padding: 14,
+  },
+  noticeText: { flex: 1, fontSize: 11, lineHeight: 16, color: "#3F5A49" },
   divider: { height: 1, backgroundColor: "#EDF2EE" },
   helperText: {
     fontSize: 11,
