@@ -1,4 +1,5 @@
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
@@ -215,27 +216,7 @@ export default function AdminHomeScreen() {
   };
 
   if (loading) {
-    return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <StatusBar barStyle="dark-content" />
-
-        <View style={styles.loadingIcon}>
-          <Ionicons name="school-outline" size={34} color="#16794A" />
-        </View>
-
-        <ProgressIndicator
-          size="lg"
-          color="#16794A"
-          style={styles.loader}
-          accessibilityLabel="Loading dashboard"
-        />
-
-        <Text style={styles.loadingTitle}>Loading dashboard</Text>
-        <Text style={styles.loadingSubtitle}>
-          Please wait while we retrieve your data.
-        </Text>
-      </SafeAreaView>
-    );
+    return <DashboardSkeleton />;
   }
 
   return (

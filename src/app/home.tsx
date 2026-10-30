@@ -1,12 +1,8 @@
-import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { supabase } from "@/lib/supabase";
 import { Redirect } from "expo-router";
 import type { Href } from "expo-router";
 import { useEffect, useState } from "react";
-import { StyleSheet, Text } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-
-const PRIMARY = "#176B45";
 
 type Destination = Href | null;
 
@@ -78,20 +74,5 @@ export default function HomeScreen() {
   if (redirectToLogin) return <Redirect href="/login" />;
   if (destination) return <Redirect href={destination} />;
 
-  return (
-    <SafeAreaView style={[styles.container, styles.center]}>
-      <ProgressIndicator
-        size="lg"
-        color={PRIMARY}
-        accessibilityLabel="Loading your dashboard"
-      />
-      <Text style={styles.loadingText}>Loading your dashboard...</Text>
-    </SafeAreaView>
-  );
+  return <DashboardSkeleton />;
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F4F8F5" },
-  center: { justifyContent: "center", alignItems: "center", gap: 12 },
-  loadingText: { color: "#52665A", fontSize: 14, marginTop: 12 },
-});

@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { ActionCard } from "@/components/ui/action-card";
 import { Card } from "@/components/ui/card";
+import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { SectionHeader } from "@/components/ui/section-header";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { AI_ENABLED } from "@/utils/aiFlags";
@@ -57,6 +58,7 @@ function formatDate(value: string) {
 }
 
 export default function StudentHomeScreen() {
+  const [loading, setLoading] = useState(true);
   const [fullName, setFullName] = useState("");
   const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
   const [quizTitles, setQuizTitles] = useState<Record<string, string>>({});
@@ -126,6 +128,8 @@ export default function StudentHomeScreen() {
           setQuizTitles(titles);
         } catch (error) {
           console.warn("Could not load student overview:", error);
+        } finally {
+          if (active) setLoading(false);
         }
       };
 
@@ -138,6 +142,8 @@ export default function StudentHomeScreen() {
   );
 
   const firstName = fullName.split(/\s+/)[0] || "Student";
+
+  if (loading) return <DashboardSkeleton />;
 
   const totalCorrect = attempts.reduce(
     (sum, attempt) => sum + attempt.score,

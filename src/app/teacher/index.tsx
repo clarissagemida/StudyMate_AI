@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
+import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { SectionHeader } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
@@ -213,13 +214,7 @@ export default function TeacherDashboardScreen() {
   };
 
   if (loading && !data) {
-    return (
-      <StateView
-        variant="loading"
-        title="Preparing your dashboard"
-        message="Loading your profile and teaching statistics..."
-      />
-    );
+    return <DashboardSkeleton />;
   }
 
   if (error && !data) {
