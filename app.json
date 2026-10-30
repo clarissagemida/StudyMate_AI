@@ -2,7 +2,7 @@
   "expo": {
     "name": "StudyMate AI",
     "slug": "StudyMate_AI",
-    "version": "1.0.1",
+    "version": "2",
     "orientation": "portrait",
     "icon": "./assets/images/image.png",
     "scheme": "studymateai",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.studymateai.app",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#064E2B",
         "foregroundImage": "./assets/images/image.png",

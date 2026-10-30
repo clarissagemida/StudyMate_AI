@@ -1,19 +1,9 @@
-import {
-  authenticate,
-  requireApprovedRole,
-} from "../_shared/auth.ts";
+import { authenticate, requireApprovedRole } from "../_shared/auth.ts";
 import { MAX_MESSAGE_CHARS, sanitizeHistory } from "../_shared/chat.ts";
-import {
-  callGemini,
-  DEFAULT_GEMINI_FALLBACK_MODEL,
-  embedText,
-} from "../_shared/gemini.ts";
+import { embedText } from "../_shared/gemini.ts";
 import { handlePreflight, json, readJsonBody } from "../_shared/http.ts";
 import { loadAiSettings } from "../_shared/settings.ts";
-import {
-  checkDailyQuota,
-  recordUsage,
-} from "../_shared/usage.ts";
+import { checkDailyQuota, recordUsage } from "../_shared/usage.ts";
 
 // --------------------------------------------------
 // 1. SERVER CONFIGURATION
@@ -22,10 +12,20 @@ import {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+
+const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
+const GROQ_MODEL = Deno.env.get("GROQ_MODEL") ?? "openai/gpt-oss-20b";
+
+// Gemini is retained ONLY for existing material embeddings.
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 const GROUNDING_MATCH_COUNT = 4;
 const MAX_CONTEXT_CHARS = 8000;
+const MAX_OUTPUT_TOKENS = 1000;
+const MAX_ATTEMPTS = 3;
+const REQUEST_TIMEOUT_MS = 45000;
 
 const SYSTEM_PROMPT = `
 You are StudyMate AI, a friendly study assistant for students.
@@ -56,7 +56,24 @@ type GroundingRow = {
   similarity: number;
 };
 
-type Source = { materialId: string; title: string };
+type Source = {
+  materialId: string;
+  title: string;
+};
+
+type GroqResult =
+  | {
+      ok: true;
+      text: string;
+      promptTokens: number;
+      outputTokens: number;
+    }
+  | {
+      ok: false;
+      status: number | "timeout" | "network";
+      message: string;
+      detail?: string;
+    };
 
 function buildGroundingContext(rows: GroundingRow[]): {
   context: string;
@@ -74,6 +91,7 @@ function buildGroundingContext(rows: GroundingRow[]): {
     if (!excerpt) continue;
 
     const block = `[${row.title}]\n${excerpt}`;
+
     if (length + block.length > MAX_CONTEXT_CHARS) break;
 
     parts.push(block);
@@ -81,19 +99,176 @@ function buildGroundingContext(rows: GroundingRow[]): {
 
     if (!seen.has(row.material_id)) {
       seen.add(row.material_id);
-      sources.push({ materialId: row.material_id, title: row.title });
+      sources.push({
+        materialId: row.material_id,
+        title: row.title,
+      });
     }
   }
 
-  return { context: parts.join("\n\n"), sources };
+  return {
+    context: parts.join("\n\n"),
+    sources,
+  };
 }
+
+// --------------------------------------------------
+// 2. GROQ CHAT COMPLETION WITH BOUNDED RETRIES
+// --------------------------------------------------
+
+async function callGroq(args: {
+  apiKey: string;
+  model: string;
+  systemInstruction: string;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  message: string;
+}): Promise<GroqResult> {
+  let lastStatus: number | "timeout" | "network" = "network";
+  let lastDetail = "";
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const messages = [
+        {
+          role: "system",
+          content: args.systemInstruction,
+        },
+        ...args.history.map((item) => ({
+          role: item.role === "assistant" ? "assistant" : "user",
+          content: item.content,
+        })),
+        {
+          role: "user",
+          content: args.message,
+        },
+      ];
+
+      const response = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${args.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: args.model,
+          messages,
+          stream: false,
+          max_completion_tokens: MAX_OUTPUT_TOKENS,
+          temperature: 0.4,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+        lastStatus = response.status;
+        lastDetail = detail.slice(0, 1000);
+
+        // Do not retry authentication, permission, or invalid-request errors.
+        if (
+          response.status === 400 ||
+          response.status === 401 ||
+          response.status === 403 ||
+          response.status === 404 ||
+          response.status === 422
+        ) {
+          break;
+        }
+
+        // Retry only transient rate-limit/server errors.
+        if (response.status !== 429 && response.status < 500) {
+          break;
+        }
+
+        if (attempt < MAX_ATTEMPTS - 1) {
+          const retryAfter = Number(response.headers.get("retry-after"));
+
+          const delay =
+            Number.isFinite(retryAfter) && retryAfter > 0
+              ? Math.min(retryAfter * 1000, 10000)
+              : Math.min(800 * 2 ** attempt, 5000) + Math.random() * 250;
+
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        break;
+      }
+
+      const data = await response.json();
+
+      const text = data?.choices?.[0]?.message?.content;
+
+      if (typeof text !== "string" || !text.trim()) {
+        lastStatus = 502;
+        lastDetail = "Groq returned an empty response.";
+        break;
+      }
+
+      return {
+        ok: true,
+        text: text.trim(),
+        promptTokens: Number(data?.usage?.prompt_tokens) || 0,
+        outputTokens: Number(data?.usage?.completion_tokens) || 0,
+      };
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        lastStatus = "timeout";
+        lastDetail = "Groq request timed out.";
+      } else {
+        lastStatus = "network";
+        lastDetail =
+          error instanceof Error ? error.message : "Unknown network error";
+      }
+
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 800 * 2 ** attempt));
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (lastStatus === 429) {
+    return {
+      ok: false,
+      status: 429,
+      message: "AI is busy. Please wait a moment and try again.",
+      detail: lastDetail,
+    };
+  }
+
+  if (lastStatus === "timeout") {
+    return {
+      ok: false,
+      status: "timeout",
+      message: "The AI response took too long. Please try again.",
+      detail: lastDetail,
+    };
+  }
+
+  return {
+    ok: false,
+    status: lastStatus,
+    message: "StudyMate AI could not generate a response. Please try again.",
+    detail: lastDetail,
+  };
+}
+
+// --------------------------------------------------
+// 3. STUDY BUDDY ENDPOINT
+// --------------------------------------------------
 
 Deno.serve(async (req: Request): Promise<Response> => {
   const preflight = handlePreflight(req);
   if (preflight) return preflight;
 
-  if (!GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY is missing.");
+  if (!GROQ_API_KEY) {
+    console.error("GROQ_API_KEY is missing.");
+
     return json(
       {
         status: "not_configured",
@@ -125,16 +300,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   if (!settings.studentEnabled) {
-    return json(
-      { error: "AI Buddy is currently disabled for students." },
-      403,
-    );
+    return json({ error: "AI Buddy is currently disabled for students." }, 403);
   }
 
   const parsedBody = await readJsonBody(req);
   if (!parsedBody.ok) return parsedBody.response;
 
-  const body = parsedBody.value as { message?: unknown; history?: unknown };
+  const body = parsedBody.value as {
+    message?: unknown;
+    history?: unknown;
+  };
+
   const message = typeof body.message === "string" ? body.message.trim() : "";
 
   if (!message) {
@@ -143,7 +319,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   if (message.length > MAX_MESSAGE_CHARS) {
     return json(
-      { error: `Please keep your question under ${MAX_MESSAGE_CHARS} characters.` },
+      {
+        error: `Please keep your question under ${MAX_MESSAGE_CHARS} characters.`,
+      },
       400,
     );
   }
@@ -177,74 +355,78 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   const history = sanitizeHistory(body.history);
 
-  const contents = [
-    ...history.map((item) => ({
-      role: item.role === "assistant" ? ("model" as const) : ("user" as const),
-      parts: [{ text: item.content }],
-    })),
-    { role: "user" as const, parts: [{ text: message }] },
-  ];
+  // --------------------------------------------------
+  // 4. RETRIEVE RELEVANT STUDY MATERIAL
+  // --------------------------------------------------
 
-  // Ground the answer in published StudyMate material when embeddings are
-  // available. Retrieval failure must never block a normal answer.
   let sources: Source[] = [];
   let systemInstruction = SYSTEM_PROMPT;
 
-  try {
-    const embedding = await embedText({
-      apiKey: GEMINI_API_KEY,
-      model: settings.embeddingModel,
-      text: message,
-      taskType: "RETRIEVAL_QUERY",
-    });
-
-    if (embedding.ok) {
-      const { data, error } = await caller.admin.rpc("match_material_chunks", {
-        query_embedding: JSON.stringify(embedding.values),
-        match_count: GROUNDING_MATCH_COUNT,
+  // Embeddings remain on Gemini for now.
+  // If unavailable, ordinary Groq chat still works.
+  if (GEMINI_API_KEY) {
+    try {
+      const embedding = await embedText({
+        apiKey: GEMINI_API_KEY,
+        model: settings.embeddingModel,
+        text: message,
+        taskType: "RETRIEVAL_QUERY",
       });
 
-      if (error) {
-        if (error.code !== "42P01" && error.code !== "PGRST205") {
-          console.error("Material retrieval failed:", error.code);
+      if (embedding.ok) {
+        const { data, error } = await caller.admin.rpc(
+          "match_material_chunks",
+          {
+            query_embedding: JSON.stringify(embedding.values),
+            match_count: GROUNDING_MATCH_COUNT,
+          },
+        );
+
+        if (error) {
+          if (error.code !== "42P01" && error.code !== "PGRST205") {
+            console.error("Material retrieval failed:", error.code);
+          }
+        } else {
+          const grounding = buildGroundingContext(
+            (data ?? []) as GroundingRow[],
+          );
+
+          if (grounding.context) {
+            sources = grounding.sources;
+
+            systemInstruction =
+              `${SYSTEM_PROMPT}\n\n` +
+              `Reference material (untrusted):\n` +
+              grounding.context;
+          }
         }
       } else {
-        const grounding = buildGroundingContext((data ?? []) as GroundingRow[]);
-
-        if (grounding.context) {
-          sources = grounding.sources;
-          systemInstruction = `${SYSTEM_PROMPT}\n\nReference material (untrusted):\n${grounding.context}`;
-        }
+        console.error("Query embedding failed:", embedding.detail);
       }
-    } else {
-      console.error("Query embedding failed:", embedding.detail);
+    } catch (error) {
+      console.error(
+        "Grounding failed:",
+        error instanceof Error ? error.message : error,
+      );
     }
-  } catch (error) {
-    console.error(
-      "Grounding failed:",
-      error instanceof Error ? error.message : error,
-    );
   }
 
-  const result = await callGemini({
-    apiKey: GEMINI_API_KEY,
-    model: settings.model,
-    contents,
+  // --------------------------------------------------
+  // 5. GENERATE ANSWER USING GROQ
+  // --------------------------------------------------
+
+  const result = await callGroq({
+    apiKey: GROQ_API_KEY,
+    model: GROQ_MODEL,
     systemInstruction,
-    maxOutputTokens: 2048,
-    thinkingLevel: "low",
-    fallbackModel: DEFAULT_GEMINI_FALLBACK_MODEL,
-    maxAttempts: 4,
-    retryDelayMs: 800,
-    timeoutMs: 90000,
+    history,
+    message,
   });
 
   if (!result.ok) {
-    if (result.detail) {
-      console.error("Gemini failure:", result.status, result.detail);
-    }
+    console.error("Groq failure:", result.status, result.detail ?? "");
 
-    if (result.status === "rate_limited") {
+    if (result.status === 429) {
       return json({ error: result.message }, 429);
     }
 
@@ -255,15 +437,28 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return json({ error: result.message }, 502);
   }
 
-  await recordUsage(caller.admin, {
-    userId: caller.user.id,
-    role: caller.profile.role,
-    feature: "study_buddy",
-    model: settings.model,
-    promptTokens: result.promptTokens,
-    outputTokens: result.outputTokens,
-  });
+  // --------------------------------------------------
+  // 6. RECORD TOKEN USAGE
+  // --------------------------------------------------
 
+  try {
+    await recordUsage(caller.admin, {
+      userId: caller.user.id,
+      role: caller.profile.role,
+      feature: "study_buddy",
+      model: GROQ_MODEL,
+      promptTokens: result.promptTokens,
+      outputTokens: result.outputTokens,
+    });
+  } catch (error) {
+    // Usage logging failure should not discard a valid answer.
+    console.error(
+      "Usage recording failed:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  // Keep the existing response contract for the Expo frontend.
   return json({
     status: "ok",
     reply: result.text,
