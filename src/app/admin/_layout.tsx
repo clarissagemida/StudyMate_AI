@@ -1,4 +1,5 @@
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { useRequireRole } from "@/hooks/useRequireRole";
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
@@ -407,24 +408,7 @@ export default function AdminLayout() {
   const guard = useRequireRole("admin");
 
   if (guard === "checking") {
-    return (
-      <View style={styles.center}>
-        <View style={styles.badge}>
-          <Ionicons name="shield-checkmark" size={30} color="#FFFFFF" />
-        </View>
-
-        <ProgressIndicator
-          size="lg"
-          color={GREEN}
-          style={styles.guardProgress}
-          accessibilityLabel="Verifying administrator access"
-        />
-
-        <Text style={styles.checkingText}>
-          Verifying administrator access...
-        </Text>
-      </View>
-    );
+    return <DashboardSkeleton />;
   }
 
   if (guard === "denied") {

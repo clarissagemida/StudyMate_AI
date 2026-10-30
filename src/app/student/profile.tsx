@@ -399,13 +399,13 @@ export default function StudentProfileScreen() {
 
   const pwdStrength = evaluatePasswordStrength(newPwd);
 
-  const _handleOpenEdit = () => {
+  const handleOpenEdit = () => {
     setEditFullName(profile?.full_name ?? "");
     setEditStudentId(profile?.student_id ?? "");
     setEditModalVisible(true);
   };
 
-  const _handleOpenPasswordChange = () => {
+  const handleOpenPasswordChange = () => {
     setCurrentPwd("");
     setNewPwd("");
     setConfirmPwd("");
@@ -416,8 +416,6 @@ export default function StudentProfileScreen() {
     setPwdModalVisible(true);
   };
 
-  const handleOpenEdit = _handleOpenEdit;
-  const handleOpenPasswordChange = _handleOpenPasswordChange;
   const signingOut = working === "signingOut";
   const deleting = working === "deleting";
 
@@ -539,6 +537,26 @@ export default function StudentProfileScreen() {
           </View>
         </View>
 
+        <Pressable
+          onPress={handleOpenEdit}
+          disabled={isWorking}
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.actionButton,
+            pressed && styles.pressed,
+            isWorking && styles.disabled,
+          ]}
+        >
+          <Ionicons name="create-outline" size={20} color={GREEN} />
+          <View style={styles.actionText}>
+            <Text style={styles.actionTitle}>Edit Profile</Text>
+            <Text style={styles.actionSubtitle}>
+              Update your name and student ID.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color="#9AA69D" />
+        </Pressable>
+
         <Text style={styles.helperText}>
           Role and approval status are managed by administrators and cannot be
           changed from this screen.
@@ -546,6 +564,26 @@ export default function StudentProfileScreen() {
 
         {/* Actions */}
         <Text style={styles.sectionTitle}>Security</Text>
+
+        <Pressable
+          onPress={handleOpenPasswordChange}
+          disabled={isWorking}
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.actionButton,
+            pressed && styles.pressed,
+            isWorking && styles.disabled,
+          ]}
+        >
+          <Ionicons name="key-outline" size={20} color={GREEN} />
+          <View style={styles.actionText}>
+            <Text style={styles.actionTitle}>Change Password</Text>
+            <Text style={styles.actionSubtitle}>
+              Update the password for your account.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color="#9AA69D" />
+        </Pressable>
 
         <Pressable
           onPress={handleLockApp}

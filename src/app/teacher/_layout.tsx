@@ -1,4 +1,4 @@
-import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { useRequireRole } from "@/hooks/useRequireRole";
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
@@ -14,16 +14,7 @@ export default function TeacherTabLayout() {
   const guard = useRequireRole("teacher");
 
   if (guard === "checking") {
-    return (
-      <View style={styles.center}>
-        <ProgressIndicator
-          size="lg"
-          color={GREEN}
-          accessibilityLabel="Verifying your account"
-        />
-        <Text style={styles.centerText}>Verifying your account...</Text>
-      </View>
-    );
+    return <DashboardSkeleton />;
   }
 
   if (guard === "denied") {
