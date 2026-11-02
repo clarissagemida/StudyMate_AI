@@ -1,4 +1,5 @@
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { supabase } from "@/lib/supabase";
 import { deleteAccount } from "@/utils/deleteAccount";
 import { confirmAction, showNotice } from "@/utils/notify";
@@ -850,6 +851,8 @@ export default function AdminUsersScreen() {
       </View>
     );
   };
+
+  if (loading && !refreshing) return <ScreenSkeleton />;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>

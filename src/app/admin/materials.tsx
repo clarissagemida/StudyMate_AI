@@ -1,4 +1,5 @@
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
@@ -227,16 +228,7 @@ export default function AdminMaterialsScreen() {
   };
 
   if (loading && items === null) {
-    return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <ProgressIndicator
-          size="lg"
-          color={GREEN}
-          accessibilityLabel="Loading learning materials"
-        />
-        <Text style={styles.centerText}>Loading learning materials...</Text>
-      </SafeAreaView>
-    );
+    return <ScreenSkeleton />;
   }
 
   if (loadError && items === null) {

@@ -1,4 +1,4 @@
-import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { ComponentProps, ReactNode } from "react";
@@ -36,18 +36,7 @@ export function StateView({
   children,
 }: StateViewProps) {
   if (variant === "loading") {
-    return (
-      <View style={styles.center}>
-        <ProgressIndicator
-          size="lg"
-          progress={progress}
-          accessibilityLabel={title ?? "Loading"}
-        />
-        {title ? <Text style={styles.title}>{title}</Text> : null}
-        {message ? <Text style={styles.message}>{message}</Text> : null}
-        {children}
-      </View>
-    );
+    return <ScreenSkeleton />;
   }
 
   const isError = variant === "error";

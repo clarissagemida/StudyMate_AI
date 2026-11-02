@@ -1,3 +1,4 @@
+import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
@@ -97,6 +98,8 @@ export default function AdminSettingsScreen() {
     }
   }
 
+  if (loading) return <ScreenSkeleton />;
+
   return (
     <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
       <ScrollView
@@ -104,14 +107,7 @@ export default function AdminSettingsScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.profileCard}>
-          {loading ? (
-            <ProgressIndicator
-              size="sm"
-              color="#FFFFFF"
-              accessibilityLabel="Loading administrator profile"
-            />
-          ) : (
-            <>
+          <>
               <View style={styles.avatar}>
                 <Text style={styles.avatarText}>
                   {adminName.trim().charAt(0).toUpperCase()}
@@ -123,8 +119,7 @@ export default function AdminSettingsScreen() {
                 <Ionicons name="shield-checkmark" size={13} color={GREEN} />
                 <Text style={styles.rolePillText}>ADMINISTRATOR</Text>
               </View>
-            </>
-          )}
+          </>
         </View>
 
         <Text style={styles.sectionTitle}>About</Text>

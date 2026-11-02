@@ -1,4 +1,5 @@
 import { MaterialReader } from "@/components/material-reader";
+import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import {
@@ -308,16 +309,7 @@ export default function StudentStudyScreen() {
   }, [readerMaterial, fileBusy]);
 
   if (loading && items === null) {
-    return (
-      <SafeAreaView style={styles.center} edges={["top"]}>
-        <ProgressIndicator
-          size="lg"
-          color={GREEN}
-          accessibilityLabel="Loading study materials"
-        />
-        <Text style={styles.centerText}>Loading study materials...</Text>
-      </SafeAreaView>
-    );
+    return <ScreenSkeleton />;
   }
 
   if (loadError && items === null) {

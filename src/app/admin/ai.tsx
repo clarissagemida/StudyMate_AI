@@ -1,4 +1,5 @@
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { supabase } from "@/lib/supabase";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
@@ -354,16 +355,7 @@ export default function AdminAiScreen() {
   }, {});
 
   if (loading) {
-    return (
-      <SafeAreaView style={styles.center} edges={["bottom"]}>
-        <ProgressIndicator
-          size="lg"
-          color={GREEN}
-          accessibilityLabel="Loading AI controls"
-        />
-        <Text style={styles.centerText}>Loading AI controls...</Text>
-      </SafeAreaView>
-    );
+    return <ScreenSkeleton />;
   }
 
   if (loadError) {

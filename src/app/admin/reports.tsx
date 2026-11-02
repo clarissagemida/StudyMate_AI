@@ -1,4 +1,4 @@
-import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { supabase } from "@/lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
@@ -94,6 +94,8 @@ export default function AdminReportsScreen() {
     setReloadToken((token) => token + 1);
   };
 
+  if (loading) return <ScreenSkeleton />;
+
   return (
     <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
       <ScrollView
@@ -110,16 +112,7 @@ export default function AdminReportsScreen() {
           </Text>
         </View>
 
-        {loading ? (
-          <View style={styles.centerBox}>
-            <ProgressIndicator
-              size="lg"
-              color={GREEN}
-              accessibilityLabel="Gathering statistics"
-            />
-            <Text style={styles.centerText}>Gathering statistics...</Text>
-          </View>
-        ) : loadError ? (
+        {loadError ? (
           <View style={styles.errorBox}>
             <View style={styles.errorIcon}>
               <Ionicons name="cloud-offline-outline" size={24} color="#FFFFFF" />
