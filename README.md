@@ -69,6 +69,24 @@ Supabase (Postgres + Auth + Edge Functions).
    AI requests retry transient Gemini 5xx responses and fall back from the
    configured model to `gemini-3.6-flash` when the primary model is unavailable.
 
+## Automatic Android APK builds
+
+The GitHub Actions workflow in `.github/workflows/android-apk.yml` starts an
+EAS Android APK build whenever a commit is pushed to `main`. You can also start
+one from the repository's **Actions** tab with **Build Android APK** → **Run
+workflow**. The build runs on EAS; its download link appears in the workflow
+log and in the EAS project dashboard when the build is ready.
+
+Before the first run:
+
+1. Add an Expo personal access token as a GitHub Actions repository secret named
+   `EXPO_TOKEN` (**Settings → Secrets and variables → Actions**).
+2. In the EAS project, create `EXPO_PUBLIC_SUPABASE_URL` and
+   `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in the **preview** environment. The
+   local `.env` file is not sent to cloud builds.
+3. Complete one Android build in EAS if signing credentials have not yet been
+   configured for this project.
+
 ### Google sign-in
 
 Google sign-in uses Supabase OAuth with PKCE. Configure both Google Cloud and
