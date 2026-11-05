@@ -10,6 +10,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -19,7 +20,7 @@ const GREEN = "#176B45";
 const DARK_GREEN = "#123D2A";
 const BG = "#F4F8F5";
 
-type Difficulty = "easy" | "medium" | "hard";
+type Difficulty = "easy" | "medium" | "hard" | "mixed";
 
 type QuizMeta = {
   id: string;
@@ -35,10 +36,12 @@ type Question = {
   position: number;
   prompt: string;
   options: string[];
+  question_type: "multiple_choice" | "true_false" | "enumeration" | "identification";
 };
 
 type ReviewQuestion = Question & {
   correct_index: number;
+  answer_text: string;
   explanation: string;
 };
 
@@ -101,8 +104,12 @@ function normalizeReviewQuestion(value: unknown): ReviewQuestion | null {
     position: typeof row.position === "number" ? row.position : 0,
     prompt,
     options,
+    question_type: ["multiple_choice", "true_false", "enumeration", "identification"].includes(String(row.questionType))
+      ? row.questionType as Question["question_type"]
+      : "multiple_choice",
     correct_index:
       typeof row.correctIndex === "number" ? row.correctIndex : 0,
+    answer_text: typeof row.answerText === "string" ? row.answerText : "",
     explanation: typeof row.explanation === "string" ? row.explanation : "",
   };
 }
@@ -138,21 +145,26 @@ function parseSubmitResult(value: unknown): SubmitResult {
 function buildMistakePrompt(
   quiz: QuizMeta,
   questions: ReviewQuestion[],
-  selections: Record<string, number>,
+  selections: Record<string, string>,
   score: number,
   total: number,
 ): string {
   const missed = questions
-    .filter((question) => selections[question.id] !== question.correct_index)
+    .filter((question) => question.question_type === "multiple_choice" || question.question_type === "true_false"
+      ? Number(selections[question.id]) !== question.correct_index
+      : (selections[question.id] ?? "").trim().toLocaleLowerCase() !== question.answer_text.trim().toLocaleLowerCase())
     .slice(0, 3);
 
   const lines = missed.map((question, index) => {
     const selected = selections[question.id];
-    const chosen =
-      selected === undefined
-        ? "No answer"
-        : question.options[selected] ?? "No answer";
-    const correct = question.options[question.correct_index] ?? "";
+    const chosen = selected === undefined || selected === ""
+      ? "No answer"
+      : question.question_type === "multiple_choice" || question.question_type === "true_false"
+        ? question.options[Number(selected)] ?? "No answer"
+        : selected;
+    const correct = question.question_type === "multiple_choice" || question.question_type === "true_false"
+      ? question.options[question.correct_index] ?? ""
+      : question.answer_text;
 
     return `${index + 1}. ${question.prompt.slice(0, 180)}
 My answer: ${chosen}
@@ -176,7 +188,7 @@ export default function QuizAttemptScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [selections, setSelections] = useState<Record<string, number>>({});
+  const [selections, setSelections] = useState<Record<string, string>>({});
 
   const [submitting, setSubmitting] = useState(false);
   const [score, setScore] = useState(0);
@@ -253,6 +265,9 @@ export default function QuizAttemptScreen() {
             position: typeof row.position === "number" ? row.position : 0,
             prompt: typeof row.prompt === "string" ? row.prompt : "",
             options,
+            question_type: ["multiple_choice", "true_false", "enumeration", "identification"].includes(String(row.question_type))
+              ? row.question_type as Question["question_type"]
+              : "multiple_choice",
           };
         })
         .filter((row): row is Question => row !== null);
@@ -287,13 +302,13 @@ export default function QuizAttemptScreen() {
   }, [guardState, loadQuiz]);
 
   const total = questions.length;
-  const answeredCount = Object.keys(selections).length;
+  const answeredCount = Object.values(selections).filter((answer) => answer.trim()).length;
   const current = questions[currentIndex];
 
   const selectOption = (questionId: string, optionIndex: number) => {
     setSelections((currentSelections) => ({
       ...currentSelections,
-      [questionId]: optionIndex,
+      [questionId]: String(optionIndex),
     }));
   };
 
@@ -315,7 +330,7 @@ export default function QuizAttemptScreen() {
     setSubmitting(true);
 
     try {
-      const answers: Record<string, number> = {};
+      const answers: Record<string, string> = {};
 
       for (const question of questions) {
         const selected = selections[question.id];
@@ -430,9 +445,9 @@ export default function QuizAttemptScreen() {
       gradedTotal > 0 ? Math.round((score / gradedTotal) * 100) : 0;
     const passed = percent >= 50;
     const circleColor = passed ? GREEN : "#B33A3A";
-    const wrongCount = reviewQuestions.filter(
-      (question) => selections[question.id] !== question.correct_index,
-    ).length;
+    const wrongCount = reviewQuestions.filter((question) => question.question_type === "multiple_choice" || question.question_type === "true_false"
+      ? Number(selections[question.id]) !== question.correct_index
+      : (selections[question.id] ?? "").trim().toLocaleLowerCase() !== question.answer_text.trim().toLocaleLowerCase()).length;
     const mistakePrompt = buildMistakePrompt(
       quiz,
       reviewQuestions,
@@ -505,8 +520,11 @@ export default function QuizAttemptScreen() {
           <Text style={styles.reviewHeading}>Review answers</Text>
 
           {reviewQuestions.map((question, index) => {
-            const selected = selections[question.id] ?? -1;
-            const isCorrect = selected === question.correct_index;
+            const selected = selections[question.id] ?? "";
+            const isOpenAnswer = question.question_type === "enumeration" || question.question_type === "identification";
+            const isCorrect = isOpenAnswer
+              ? selected.trim().toLocaleLowerCase() === question.answer_text.trim().toLocaleLowerCase()
+              : Number(selected) === question.correct_index;
 
             return (
               <View key={question.id} style={styles.reviewCard}>
@@ -528,9 +546,14 @@ export default function QuizAttemptScreen() {
                   </Text>
                 </View>
 
-                {question.options.map((option, optionIndex) => {
+                {isOpenAnswer ? (
+                  <View style={styles.reviewOption}>
+                    <Text style={styles.reviewOptionText}>Your answer: {selected || "No answer"}</Text>
+                    <Text style={styles.reviewOptionText}>Correct answer: {question.answer_text}</Text>
+                  </View>
+                ) : question.options.map((option, optionIndex) => {
                   const isAnswer = optionIndex === question.correct_index;
-                  const isChosen = optionIndex === selected;
+                  const isChosen = String(optionIndex) === selected;
 
                   return (
                     <View
@@ -629,8 +652,19 @@ export default function QuizAttemptScreen() {
         <Text style={styles.questionPrompt}>{current.prompt}</Text>
 
         <View style={styles.options}>
-          {current.options.map((option, optionIndex) => {
-            const isSelected = selections[current.id] === optionIndex;
+          {current.question_type === "enumeration" || current.question_type === "identification" ? (
+            <TextInput
+              value={selections[current.id] ?? ""}
+              onChangeText={(value) => setSelections((currentSelections) => ({ ...currentSelections, [current.id]: value }))}
+              placeholder={current.question_type === "enumeration" ? "Enter answers, separated by commas" : "Type your answer"}
+              placeholderTextColor="#9AA69E"
+              multiline={current.question_type === "enumeration"}
+              textAlignVertical="top"
+              style={styles.option}
+              accessibilityLabel="Your answer"
+            />
+          ) : current.options.map((option, optionIndex) => {
+            const isSelected = selections[current.id] === String(optionIndex);
 
             return (
               <Pressable

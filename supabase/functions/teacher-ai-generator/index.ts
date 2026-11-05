@@ -2,11 +2,8 @@ import {
   authenticate,
   requireApprovedRole,
 } from "../_shared/auth.ts";
-import {
-  callGemini,
-  DEFAULT_GEMINI_FALLBACK_MODEL,
-} from "../_shared/gemini.ts";
 import { handlePreflight, json, readJsonBody } from "../_shared/http.ts";
+import { callGroqCompletion } from "../_shared/groq.ts";
 import { loadAiSettings } from "../_shared/settings.ts";
 import {
   checkDailyQuota,
@@ -14,15 +11,15 @@ import {
 } from "../_shared/usage.ts";
 import {
   MAX_QUIZ_QUESTIONS,
-  QUIZ_RESPONSE_SCHEMA,
   trimString,
-  validateGeneratedQuestions,
+  validateGeneratedTeacherQuestions,
 } from "../_shared/validation.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
+const GROQ_MODEL = Deno.env.get("GROQ_MODEL") ?? "openai/gpt-oss-20b";
 
 const MAX_MATERIAL_CHARS = 10000;
 
@@ -81,7 +78,7 @@ Deno.serve(async (req: Request) => {
     !SUPABASE_URL ||
     !SUPABASE_ANON_KEY ||
     !SERVICE_ROLE_KEY ||
-    !GEMINI_API_KEY
+    !GROQ_API_KEY
   ) {
     return json({ error: "Server configuration is incomplete." }, 500);
   }
@@ -120,7 +117,12 @@ Deno.serve(async (req: Request) => {
     topic?: unknown;
     difficulty?: unknown;
     questionCount?: unknown;
+    questionType?: unknown;
+    questionGroups?: unknown;
     materialId?: unknown;
+    draftType?: unknown;
+    gradeLevel?: unknown;
+    detailLevel?: unknown;
   };
 
   const mode = body.mode;
@@ -129,6 +131,28 @@ Deno.serve(async (req: Request) => {
   const difficulty = trimString(body.difficulty, 20) || "medium";
   const materialId = trimString(body.materialId, 64);
   const requestedCount = Number(body.questionCount ?? 10);
+  const questionType = trimString(body.questionType, 30) || "multiple_choice";
+  const validQuestionTypes = [
+    "multiple_choice",
+    "true_false",
+    "enumeration",
+    "identification",
+  ];
+  const questionGroups = Array.isArray(body.questionGroups)
+    ? body.questionGroups.map((value) => {
+        const group = value && typeof value === "object"
+          ? value as Record<string, unknown>
+          : {};
+        return {
+          questionType: trimString(group.questionType, 30),
+          questionCount: Number(group.questionCount),
+          difficulty: trimString(group.difficulty, 20),
+        };
+      })
+    : [{ questionType, questionCount: requestedCount, difficulty }];
+  const draftType = trimString(body.draftType, 30) || "lesson";
+  const gradeLevel = trimString(body.gradeLevel, 30) || "general";
+  const detailLevel = trimString(body.detailLevel, 30) || "balanced";
 
   if (mode !== "topic" && mode !== "quiz") {
     return json({ error: "Mode must be topic or quiz." }, 400);
@@ -138,17 +162,40 @@ Deno.serve(async (req: Request) => {
     return json({ error: "Enter a valid subject and topic." }, 400);
   }
 
+  if (!validQuestionTypes.includes(questionType)) {
+    return json({ error: "Choose a supported question type." }, 400);
+  }
+
+  if (
+    mode === "quiz" &&
+    (questionGroups.length < 1 || questionGroups.length > 6 ||
+      questionGroups.some((group) =>
+        !validQuestionTypes.includes(group.questionType) ||
+        !["easy", "medium", "hard"].includes(group.difficulty) ||
+        !Number.isInteger(group.questionCount) || group.questionCount < 1
+      ) ||
+      questionGroups.reduce((sum, group) => sum + group.questionCount, 0) > MAX_QUIZ_QUESTIONS)
+  ) {
+    return json({ error: "Use 1 to 6 question groups with 1 to 50 questions total." }, 400);
+  }
+
+  if (mode === "topic" && !["lesson", "summary", "objectives", "examples", "review_questions"].includes(draftType)) {
+    return json({ error: "Choose a supported lesson draft type." }, 400);
+  }
+  if (mode === "topic" && !["general", "elementary", "secondary", "college"].includes(gradeLevel)) {
+    return json({ error: "Choose a supported learner level." }, 400);
+  }
+  if (mode === "topic" && !["brief", "balanced", "detailed"].includes(detailLevel)) {
+    return json({ error: "Choose a supported detail level." }, 400);
+  }
+
   if (!["easy", "medium", "hard"].includes(difficulty)) {
     return json({ error: "Invalid difficulty." }, 400);
   }
 
-  const questionCount = Math.max(
-    1,
-    Math.min(
-      MAX_QUIZ_QUESTIONS,
-      Math.floor(requestedCount || 10),
-    ),
-  );
+  const questionCount = mode === "quiz"
+    ? questionGroups.reduce((sum, group) => sum + group.questionCount, 0)
+    : Math.max(1, Math.min(MAX_QUIZ_QUESTIONS, Math.floor(requestedCount || 10)));
 
   const quota = await checkDailyQuota(
     caller.admin,
@@ -220,29 +267,57 @@ Deno.serve(async (req: Request) => {
     ? `${materialContext}\n\nSubject: ${subject}\nTopic: ${topic}\nDifficulty: ${difficulty}`
     : `Subject: ${subject}\nTopic: ${topic}\nDifficulty: ${difficulty}`;
 
+  const draftInstructions: Record<string, string> = {
+    lesson: "Create a classroom-ready lesson outline with a title, learning objectives, key concepts, explanation, examples, and a short review.",
+    summary: "Create a clear, accurate summary of the topic with the most important ideas and key terms.",
+    objectives: "Write measurable learning objectives using clear action verbs. Add a short success criteria list.",
+    examples: "Explain the topic through practical examples. Include a brief explanation for each example and a common misconception to watch for.",
+    review_questions: "Create a short set of review questions with an answer key and brief explanations.",
+  };
+  const detailInstructions: Record<string, string> = {
+    brief: "Keep the output compact and focused on essentials.",
+    balanced: "Give enough detail to teach the topic clearly without unnecessary length.",
+    detailed: "Provide a thorough, well-structured draft with extra explanation and examples.",
+  };
+  const gradeInstructions: Record<string, string> = {
+    general: "Use accessible language suitable for a mixed classroom.",
+    elementary: "Use simple vocabulary, short explanations, and familiar examples.",
+    secondary: "Use clear academic language appropriate for secondary students.",
+    college: "Use precise terminology and a deeper level of explanation suitable for college students.",
+  };
+
   const prompt =
     mode === "topic"
-      ? `You are a teaching assistant. Create a useful lesson outline.
+      ? `Create a teacher-reviewed ${draftType.replace("_", " ")} draft.
 ${basePrompt}
+Target level: ${gradeLevel}
+Detail: ${detailLevel}
 
-Include:
-1. A clear lesson title
-2. Learning objectives
-3. Key concepts
-4. A short, easy-to-understand explanation
-5. Two examples
-6. Three review questions
+${draftInstructions[draftType]}
+${gradeInstructions[gradeLevel]}
+${detailInstructions[detailLevel]}
 
-Use accurate, student-friendly language. Format the result clearly.`
+Use supplied material as the source of truth when it is present. Do not invent
+facts or claim details that are absent from the supplied material. Organize
+the response with clear headings and useful formatting.`
       : `You are a teaching assistant creating a draft quiz for teacher review.
 ${basePrompt}
-Number of questions: ${questionCount}
+Question sections, in order:
+${questionGroups.map((group, index) => `${index + 1}. ${group.questionType}, ${group.difficulty} difficulty: exactly ${group.questionCount} questions`).join("\n")}
+Total questions: ${questionCount}
 
-Create exactly ${questionCount} multiple-choice questions. Do not omit any or
-stop early. Every question must have exactly four options, one correct answer,
-and a short explanation. Use accurate content and plausible distractors. Keep
-questions distinct and avoid repeating the same concept. Return JSON that
-matches the provided schema.`;
+Create the exact number requested in each section and keep the question order
+grouped by section. Match each section's difficulty and questionType. Do not
+omit questions or stop early. For multiple_choice, provide exactly four options and the
+correctIndex. For true_false, provide options ["True", "False"] and the
+correctIndex. For enumeration, put all expected answers in answerText as a
+comma-separated list, set options to ["", ""], and set correctIndex to 0.
+For identification, put the correct answer in answerText, set options to
+["", ""], and set correctIndex to 0. Every question also needs a short
+explanation. Use accurate content and keep questions distinct. Set
+questionType to the requested type. Return one JSON object with a questions
+array. Every item must include questionType, prompt, options, correctIndex,
+answerText, and explanation.`;
 
   const quizMaxOutputTokens = Math.min(
     32768,
@@ -250,19 +325,14 @@ matches the provided schema.`;
   );
   const quizTimeoutMs = Math.min(120000, 60000 + questionCount * 1500);
 
-  const result = await callGemini({
-    apiKey: GEMINI_API_KEY,
-    model: settings.model,
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
+  const result = await callGroqCompletion({
+    apiKey: GROQ_API_KEY,
+    model: GROQ_MODEL,
     systemInstruction: TEACHER_SYSTEM_PROMPT,
-    maxOutputTokens: mode === "quiz" ? quizMaxOutputTokens : 4096,
-    thinkingLevel: "low",
-    responseMimeType: mode === "quiz" ? "application/json" : undefined,
-    responseSchema: mode === "quiz" ? QUIZ_RESPONSE_SCHEMA : undefined,
+    prompt,
+    json: mode === "quiz",
+    maxTokens: mode === "quiz" ? quizMaxOutputTokens : 4096,
     timeoutMs: mode === "quiz" ? quizTimeoutMs : 60000,
-    fallbackModel: DEFAULT_GEMINI_FALLBACK_MODEL,
-    maxAttempts: 4,
-    retryDelayMs: 800,
   });
 
   if (!result.ok) {
@@ -270,7 +340,7 @@ matches the provided schema.`;
       console.error("Teacher AI failure:", result.status, result.detail);
     }
 
-    if (result.status === "rate_limited") {
+    if (result.status === 429) {
       return json({ error: result.message }, 429);
     }
 
@@ -285,7 +355,7 @@ matches the provided schema.`;
     userId: caller.user.id,
     role: caller.profile.role,
     feature: "teacher_generator",
-    model: settings.model,
+    model: GROQ_MODEL,
     promptTokens: result.promptTokens,
     outputTokens: result.outputTokens,
   });
@@ -294,7 +364,7 @@ matches the provided schema.`;
     return json({ status: "ok", mode, content: result.text });
   }
 
-  const validated = validateGeneratedQuestions(parseJsonObject(result.text));
+  const validated = validateGeneratedTeacherQuestions(parseJsonObject(result.text));
 
   if (!validated.ok) {
     console.error("Invalid AI quiz payload:", validated.message);
@@ -304,8 +374,18 @@ matches the provided schema.`;
     );
   }
 
-  if (validated.questions.length > questionCount) {
-    validated.questions.length = questionCount;
+  const expectedQuestionTypes = questionGroups.flatMap((group) =>
+    Array.from({ length: group.questionCount }, () => group.questionType),
+  );
+  if (
+    validated.questions.length !== questionCount ||
+    validated.questions.some((question, index) => question.questionType !== expectedQuestionTypes[index])
+  ) {
+    console.error("Teacher AI returned the wrong number or type of quiz questions.");
+    return json(
+      { error: "The AI returned an incomplete quiz draft. Please try again." },
+      502,
+    );
   }
 
   return json({ status: "ok", mode, questions: validated.questions });

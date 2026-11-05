@@ -5,6 +5,7 @@ import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
@@ -579,6 +580,20 @@ export default function TeacherStudentsScreen() {
                 </Text>
               </View>
             )}
+            {selected ? (
+              <Pressable
+                onPress={() => {
+                  const contactId = selected.student_id;
+                  closeStudent();
+                  router.push({ pathname: "/teacher/messages", params: { contactId } });
+                }}
+                accessibilityRole="button"
+                style={({ pressed }) => [styles.messageButton, pressed && styles.pressed]}
+              >
+                <Ionicons name="chatbubble-outline" size={17} color="#FFFFFF" />
+                <Text style={styles.messageButtonText}>Message student</Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -774,4 +789,15 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     textAlign: "center",
   },
+  messageButton: {
+    minHeight: 46,
+    borderRadius: radius.md,
+    backgroundColor: GREEN,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  messageButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
 });

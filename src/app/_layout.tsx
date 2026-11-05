@@ -2,6 +2,7 @@ import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import { useColorScheme } from "react-native";
 
 import { AnimatedSplashOverlay } from "@/components/animated-icon";
+import { SweetAlertHost } from "@/components/ui/sweet-alert-host";
 
 // Prevent auto hide - handled in animated splash overlay for this setup
 
@@ -23,6 +24,7 @@ export default function RootLayout() {
         <Stack.Screen name="admin" />
         <Stack.Screen name="auth/callback" />
       </Stack>
+      <SweetAlertHost />
     </ThemeProvider>
   );
 }

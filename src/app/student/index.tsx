@@ -272,6 +272,17 @@ export default function StudentHomeScreen() {
 
           <View style={styles.gridCell}>
             <ActionCard
+              icon="chatbubbles-outline"
+              iconColor="#176B45"
+              iconBg="#E8F3EB"
+              title="Message a Teacher"
+              description="Ask about your classwork"
+              onPress={() => openScreen("/student/messages")}
+            />
+          </View>
+
+          <View style={styles.gridCell}>
+            <ActionCard
               icon="stats-chart-outline"
               iconColor="#267B83"
               iconBg="#DFF1F3"

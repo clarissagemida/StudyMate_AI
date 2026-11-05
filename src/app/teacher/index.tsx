@@ -343,6 +343,23 @@ export default function TeacherDashboardScreen() {
         <Text style={styles.sectionTitle}>Quick actions</Text>
 
         <Pressable
+          onPress={() => router.push("/teacher/ai-buddy")}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.aiBuddyAction, pressed && styles.pressed]}
+        >
+          <View style={styles.aiBuddyIcon}>
+            <Ionicons name="sparkles" size={23} color="#FFFFFF" />
+          </View>
+          <View style={styles.primaryActionText}>
+            <Text style={styles.primaryActionTitle}>Open Teacher AI Buddy</Text>
+            <Text style={styles.primaryActionSubtitle}>
+              Get Groq-powered help with lesson planning and teaching ideas
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#FFFFFF" />
+        </Pressable>
+
+        <Pressable
           onPress={() => router.push("/teacher/material")}
           accessibilityRole="button"
           style={({ pressed }) => [styles.primaryAction, pressed && styles.pressed]}
@@ -361,7 +378,12 @@ export default function TeacherDashboardScreen() {
           <Ionicons name="chevron-forward" size={20} color="#FFFFFF" />
         </Pressable>
 
-        <View style={styles.pendingAction}>
+        <Pressable
+          onPress={() => router.push("/teacher/quizzes")}
+          accessibilityRole="button"
+          accessibilityLabel="Create or manage quizzes"
+          style={({ pressed }) => [styles.pendingAction, pressed && styles.pressed]}
+        >
           <View style={styles.pendingActionIcon}>
             <Ionicons name="clipboard-outline" size={22} color={GREEN} />
           </View>
@@ -371,17 +393,32 @@ export default function TeacherDashboardScreen() {
               Draft with AI or add multiple-choice and true/false questions
             </Text>
           </View>
-          <Pressable
-            onPress={() => router.push("/teacher/quizzes")}
-            accessibilityRole="button"
-            accessibilityLabel="Open quizzes"
-            hitSlop={6}
-          >
-            <Ionicons name="chevron-forward" size={20} color={GREEN} />
-          </Pressable>
-        </View>
+          <Ionicons name="chevron-forward" size={20} color={GREEN} />
+        </Pressable>
 
-        <View style={styles.pendingAction}>
+        <Pressable
+          onPress={() => router.push("/teacher/messages")}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.pendingAction, pressed && styles.pressed]}
+        >
+          <View style={styles.pendingActionIcon}>
+            <Ionicons name="chatbubbles-outline" size={22} color={GREEN} />
+          </View>
+          <View style={styles.primaryActionText}>
+            <Text style={styles.pendingActionTitle}>Teacher–student messages</Text>
+            <Text style={styles.pendingActionSubtitle}>
+              Private conversations with students from your classes
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={GREEN} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push("/teacher/students")}
+          accessibilityRole="button"
+          accessibilityLabel="Open student progress"
+          style={({ pressed }) => [styles.pendingAction, pressed && styles.pressed]}
+        >
           <View style={styles.pendingActionIcon}>
             <Ionicons name="people-outline" size={22} color={GREEN} />
           </View>
@@ -391,15 +428,8 @@ export default function TeacherDashboardScreen() {
               Review attempts and average scores from your quizzes
             </Text>
           </View>
-          <Pressable
-            onPress={() => router.push("/teacher/students")}
-            accessibilityRole="button"
-            accessibilityLabel="Open student progress"
-            hitSlop={6}
-          >
-            <Ionicons name="chevron-forward" size={20} color={GREEN} />
-          </Pressable>
-        </View>
+          <Ionicons name="chevron-forward" size={20} color={GREEN} />
+        </Pressable>
 
         {/* Recent materials */}
         <SectionHeader
@@ -414,10 +444,10 @@ export default function TeacherDashboardScreen() {
 
         {materials === null ? (
           <Card style={styles.emptyBox}>
-            <Ionicons name="folder-open-outline" size={26} color={colors.textFaint} />
-            <Text style={styles.emptyTitle}>No materials yet</Text>
+            <Ionicons name="cloud-offline-outline" size={26} color={colors.textFaint} />
+            <Text style={styles.emptyTitle}>Materials unavailable</Text>
             <Text style={styles.emptyText}>
-              Materials you create will be listed here.
+              Complete the Supabase materials setup to load your recent work.
             </Text>
           </Card>
         ) : recentMaterials.length === 0 ? (
@@ -564,6 +594,22 @@ const styles = StyleSheet.create({
     backgroundColor: GREEN,
     borderRadius: radius.lg,
     padding: spacing.lg,
+  },
+  aiBuddyAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    backgroundColor: DARK_GREEN,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+  },
+  aiBuddyIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   primaryActionIcon: {
     width: 44,

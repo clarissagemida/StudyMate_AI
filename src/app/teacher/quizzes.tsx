@@ -1,7 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { AI_ENABLED } from "@/utils/aiFlags";
 import { confirmAction, showNotice } from "@/utils/notify";
-import { generateTeacherAi } from "@/utils/teacherAi";
+import { generateTeacherAi, type TeacherAiQuestionType } from "@/utils/teacherAi";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
@@ -9,7 +9,7 @@ import { ScreenTitle } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
@@ -31,8 +31,13 @@ const DARK_GREEN = colors.primaryDark;
 const BG = colors.background;
 
 type QuizStatus = "draft" | "published";
-type Difficulty = "easy" | "medium" | "hard";
-type QuestionType = "multiple_choice" | "true_false";
+type Difficulty = "easy" | "medium" | "hard" | "mixed";
+type SectionDifficulty = Exclude<Difficulty, "mixed">;
+type QuestionType =
+  | "multiple_choice"
+  | "true_false"
+  | "enumeration"
+  | "identification";
 
 type QuizRow = {
   id: string;
@@ -53,7 +58,10 @@ type QuestionDraft = {
   prompt: string;
   options: string[];
   correctIndex: number;
+  answerText: string;
   explanation: string;
+  sectionNumber: number;
+  sectionDifficulty: SectionDifficulty;
   aiGenerated?: boolean;
 };
 
@@ -68,22 +76,26 @@ type QuizForm = {
   title: string;
   subject: string;
   topic: string;
-  difficulty: Difficulty;
   description: string;
 };
 
 type LoadMode = "initial" | "refresh";
 type FilterValue = "all" | QuizStatus;
+type AiQuestionGroupDraft = {
+  id: string;
+  questionType: TeacherAiQuestionType;
+  countText: string;
+  difficulty: SectionDifficulty;
+};
 
 const EMPTY_FORM: QuizForm = {
   title: "",
   subject: "",
   topic: "",
-  difficulty: "medium",
   description: "",
 };
 
-const DIFFICULTIES: { label: string; value: Difficulty }[] = [
+const DIFFICULTIES: { label: string; value: SectionDifficulty }[] = [
   { label: "Easy", value: "easy" },
   { label: "Medium", value: "medium" },
   { label: "Hard", value: "hard" },
@@ -97,6 +109,18 @@ const FILTERS: { label: string; value: FilterValue }[] = [
 
 const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 const TRUE_FALSE_OPTIONS = ["True", "False"];
+const AI_QUESTION_TYPES: { label: string; value: TeacherAiQuestionType }[] = [
+  { label: "Multiple choice", value: "multiple_choice" },
+  { label: "True / False", value: "true_false" },
+  { label: "Enumeration", value: "enumeration" },
+  { label: "Identification", value: "identification" },
+];
+const DEFAULT_AI_GROUP: AiQuestionGroupDraft = {
+  id: "ai-group-default",
+  questionType: "multiple_choice",
+  countText: "10",
+  difficulty: "medium",
+};
 
 let keyCounter = 0;
 function makeKey(): string {
@@ -119,7 +143,10 @@ function makeEmptyQuestion(): QuestionDraft {
     prompt: "",
     options: ["", "", "", ""],
     correctIndex: 0,
+    answerText: "",
     explanation: "",
+    sectionNumber: 1,
+    sectionDifficulty: "medium",
   };
 }
 
@@ -135,6 +162,19 @@ function isMissingRelation(
     message.includes("could not find the table") ||
     message.includes("does not exist")
   );
+}
+
+function quizQuestionSchemaHint(message: string): string {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("question_type") ||
+    normalized.includes("answer_text") ||
+    normalized.includes("section_number") ||
+    normalized.includes("section_difficulty")
+  ) {
+    return `${message}\n\nUpdate Supabase by running supabase/quiz_question_types.sql in the SQL Editor, then retry.`;
+  }
+  return message;
 }
 
 function formatDate(value: string) {
@@ -170,7 +210,21 @@ function normalizeOptions(question: QuestionDraft) {
   };
 }
 
+function questionSectionAt(questions: QuestionDraft[], index: number) {
+  const sectionNumber = questions[index]?.sectionNumber;
+  let start = index;
+  let end = index;
+  while (start > 0 && questions[start - 1]?.sectionNumber === sectionNumber) start -= 1;
+  while (end + 1 < questions.length && questions[end + 1]?.sectionNumber === sectionNumber) end += 1;
+  return { start, count: end - start + 1, section: sectionNumber };
+}
+
+function questionTypeLabel(type: QuestionType) {
+  return AI_QUESTION_TYPES.find((option) => option.value === type)?.label ?? "Questions";
+}
+
 export default function TeacherQuizzesScreen() {
+  const { aiDraft } = useLocalSearchParams<{ aiDraft?: string }>();
   const [items, setItems] = useState<QuizRow[] | null>(null);
   const [questionCounts, setQuestionCounts] = useState<Record<string, number>>(
     {},
@@ -201,13 +255,25 @@ export default function TeacherQuizzesScreen() {
 
   const [materials, setMaterials] = useState<MaterialOption[]>([]);
   const [aiMaterialId, setAiMaterialId] = useState("");
-  const [aiCountText, setAiCountText] = useState("10");
-  const parsedAiCount = Number.parseInt(aiCountText, 10);
-  // const aiCount = parsedAiCount;
-  const aiCountValid =
-    Number.isInteger(parsedAiCount) &&
-    parsedAiCount >= 1 &&
-    parsedAiCount <= 50;
+  const [aiGroups, setAiGroups] = useState<AiQuestionGroupDraft[]>([
+    { ...DEFAULT_AI_GROUP },
+  ]);
+  const parsedAiGroups = useMemo(
+    () => aiGroups.map((group) => ({
+      questionType: group.questionType,
+      questionCount: Number.parseInt(group.countText, 10),
+      difficulty: group.difficulty,
+    })),
+    [aiGroups],
+  );
+  const aiTotalCount = parsedAiGroups.reduce(
+    (total, group) => total + (Number.isFinite(group.questionCount) ? group.questionCount : 0),
+    0,
+  );
+  const aiGroupsValid = aiGroups.length >= 1 && aiGroups.length <= 6 &&
+    parsedAiGroups.every((group) => Number.isInteger(group.questionCount) && group.questionCount >= 1) &&
+    aiTotalCount <= 50;
+  const [topicDropdownOpen, setTopicDropdownOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [regeneratingKey, setRegeneratingKey] = useState<string | null>(null);
 
@@ -276,8 +342,9 @@ export default function TeacherQuizzesScreen() {
         setQuestionCounts({});
       }
     } catch (err) {
-      const message =
+      const rawMessage =
         err instanceof Error ? err.message : "Something went wrong.";
+      const message = quizQuestionSchemaHint(rawMessage);
       console.error("Teacher quizzes error:", err);
 
       if (mode === "refresh") {
@@ -349,19 +416,49 @@ export default function TeacherQuizzesScreen() {
     });
   }, [items, search, filter]);
 
-  const openCreate = () => {
+  const subjectMaterials = useMemo(() => {
+    const subject = form.subject.trim().toLocaleLowerCase();
+    return materials.filter(
+      (material) => !subject || material.subject.trim().toLocaleLowerCase() === subject,
+    );
+  }, [materials, form.subject]);
+
+  const subjectTopics = useMemo(
+    () => [...new Set(subjectMaterials.map((material) => material.topic.trim() || material.title).filter(Boolean))],
+    [subjectMaterials],
+  );
+  const filteredTopics = useMemo(() => {
+    const term = form.topic.trim().toLocaleLowerCase();
+    return subjectTopics.filter((topic) => !term || topic.toLocaleLowerCase().includes(term));
+  }, [subjectTopics, form.topic]);
+
+  const openCreate = useCallback(() => {
     questionLoadRef.current += 1;
     setEditingId(null);
     setEditingStatus("draft");
     setForm(EMPTY_FORM);
-    setQuestions([makeEmptyQuestion()]);
+    setQuestions([]);
     setFormErrors({});
     setExistingQuestionIds([]);
     setQuestionsReady(true);
     setAiMaterialId("");
-    setAiCountText("10");
+    setAiGroups([{ ...DEFAULT_AI_GROUP, id: makeKey() }]);
+    setTopicDropdownOpen(false);
     setModalVisible(true);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (typeof aiDraft !== "string" || !aiDraft.trim()) return;
+    const timer = setTimeout(() => {
+      openCreate();
+      setForm((current) => ({
+        ...current,
+        description: aiDraft.slice(0, 2000),
+      }));
+      router.setParams({ aiDraft: undefined });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [aiDraft, openCreate]);
 
   const openEdit = async (item: QuizRow) => {
     const requestId = questionLoadRef.current + 1;
@@ -373,7 +470,6 @@ export default function TeacherQuizzesScreen() {
       title: item.title,
       subject: item.subject,
       topic: item.topic ?? "",
-      difficulty: item.difficulty,
       description: item.description ?? "",
     });
     setFormErrors({});
@@ -381,13 +477,14 @@ export default function TeacherQuizzesScreen() {
     setExistingQuestionIds([]);
     setQuestionsReady(false);
     setAiMaterialId("");
+    setTopicDropdownOpen(false);
     setModalVisible(true);
 
     // Load the existing questions for editing.
     try {
       const { data, error } = await supabase
         .from("quiz_questions")
-        .select("id, position, prompt, options, correct_index, explanation")
+        .select("id, position, prompt, options, correct_index, explanation, question_type, answer_text, section_number, section_difficulty")
         .eq("quiz_id", item.id)
         .order("position", { ascending: true });
 
@@ -398,12 +495,24 @@ export default function TeacherQuizzesScreen() {
       if (questionLoadRef.current !== requestId) return;
 
       const rows = data ?? [];
-      const loaded: QuestionDraft[] = rows.map((row) => {
+      let fallbackSection = 0;
+      let previousType: QuestionType | null = null;
+      const loaded: QuestionDraft[] = rows.map((row, index) => {
         const rawOptions =
           Array.isArray(row.options) && row.options.length >= 2
             ? (row.options as string[])
             : ["", "", "", ""];
-        const type = inferQuestionType(rawOptions);
+        const type = ["multiple_choice", "true_false", "enumeration", "identification"].includes(String(row.question_type))
+          ? (row.question_type as QuestionType)
+          : inferQuestionType(rawOptions);
+        if (index === 0 || previousType !== type) fallbackSection += 1;
+        previousType = type;
+        const sectionNumber = typeof row.section_number === "number"
+          ? row.section_number
+          : fallbackSection;
+        const sectionDifficulty: SectionDifficulty = ["easy", "medium", "hard"].includes(String(row.section_difficulty))
+          ? row.section_difficulty as SectionDifficulty
+          : "medium";
 
         return {
           key: makeKey(),
@@ -413,18 +522,37 @@ export default function TeacherQuizzesScreen() {
             type === "true_false" ? [...TRUE_FALSE_OPTIONS] : rawOptions,
           correctIndex:
             typeof row.correct_index === "number" ? row.correct_index : 0,
+          answerText: typeof row.answer_text === "string" ? row.answer_text : "",
           explanation: row.explanation ?? "",
+          sectionNumber,
+          sectionDifficulty,
         };
       });
 
       setExistingQuestionIds(rows.map((row) => row.id));
       setQuestions(loaded.length > 0 ? loaded : [makeEmptyQuestion()]);
+      const loadedGroups: AiQuestionGroupDraft[] = [];
+      for (const question of loaded) {
+        const lastGroup = loadedGroups[loadedGroups.length - 1];
+        if (lastGroup?.id === String(question.sectionNumber)) {
+          lastGroup.countText = String(Number(lastGroup.countText) + 1);
+        } else {
+          loadedGroups.push({
+            id: String(question.sectionNumber),
+            questionType: question.type,
+            countText: "1",
+            difficulty: question.sectionDifficulty,
+          });
+        }
+      }
+      setAiGroups(loadedGroups.length ? loadedGroups.slice(0, 6) : [{ ...DEFAULT_AI_GROUP, id: makeKey() }]);
       setQuestionsReady(true);
     } catch (err) {
       if (questionLoadRef.current !== requestId) return;
 
-      const message =
+      const rawMessage =
         err instanceof Error ? err.message : "Something went wrong.";
+      const message = quizQuestionSchemaHint(rawMessage);
       console.error("Load quiz questions error:", err);
       showNotice("Unable to Load Questions", message);
       // Keep saving blocked: replacing questions we failed to read would
@@ -439,6 +567,7 @@ export default function TeacherQuizzesScreen() {
     if (saving) return;
     setModalVisible(false);
     setFormErrors({});
+    setTopicDropdownOpen(false);
   };
 
   const updateQuestion = (
@@ -464,20 +593,29 @@ export default function TeacherQuizzesScreen() {
           type,
           options: [...TRUE_FALSE_OPTIONS],
           correctIndex: 0,
+          answerText: "",
         };
       }
 
       return {
         ...current,
         type,
-        options: ["", "", "", ""],
+        options: type === "multiple_choice" ? ["", "", "", ""] : ["", ""],
         correctIndex: 0,
+        answerText: "",
       };
     });
   };
 
   const addQuestion = () => {
-    setQuestions((current) => [...current, makeEmptyQuestion()]);
+    setQuestions((current) => {
+      const last = current[current.length - 1];
+      return [...current, {
+        ...makeEmptyQuestion(),
+        sectionNumber: last?.sectionNumber ?? 1,
+        sectionDifficulty: last?.sectionDifficulty ?? "medium",
+      }];
+    });
   };
 
   const removeQuestion = (key: string) => {
@@ -487,8 +625,18 @@ export default function TeacherQuizzesScreen() {
     });
   };
 
-  const handleAiCountChange = (value: string) => {
-    setAiCountText(value.replace(/[^0-9]/g, "").slice(0, 2));
+  const updateAiGroup = (id: string, update: Partial<AiQuestionGroupDraft>) => {
+    setAiGroups((current) => current.map((group) => group.id === id ? { ...group, ...update } : group));
+  };
+
+  const addAiGroup = () => {
+    if (aiGroups.length >= 6 || aiTotalCount >= 50) return;
+    setAiGroups((current) => [...current, {
+      id: makeKey(),
+      questionType: "true_false",
+      countText: String(Math.min(5, 50 - aiTotalCount)),
+      difficulty: aiGroups[aiGroups.length - 1]?.difficulty ?? "medium",
+    }]);
   };
 
   const selectAiMaterial = (material: MaterialOption | null) => {
@@ -531,7 +679,7 @@ export default function TeacherQuizzesScreen() {
       saving ||
       regeneratingKey ||
       !questionsReady ||
-      !aiCountValid
+      !aiGroupsValid
     ) {
       return;
     }
@@ -546,8 +694,10 @@ export default function TeacherQuizzesScreen() {
         mode: "quiz",
         subject: context.subject,
         topic: context.topic,
-        difficulty: form.difficulty,
-        questionCount: parsedAiCount,
+        difficulty: parsedAiGroups[0]?.difficulty ?? "medium",
+        questionCount: aiTotalCount,
+        questionType: parsedAiGroups[0]?.questionType,
+        questionGroups: parsedAiGroups,
         materialId: aiMaterialId || undefined,
       });
 
@@ -563,14 +713,22 @@ export default function TeacherQuizzesScreen() {
         return;
       }
 
-      setQuestions(
-        result.questions.map((question) => ({
-          key: makeKey(),
-          type: "multiple_choice" as const,
-          ...question,
-          aiGenerated: true,
-        })),
+      let questionIndex = 0;
+      const generatedQuestions = parsedAiGroups.flatMap((group, groupIndex) =>
+        Array.from({ length: group.questionCount }, () => {
+          const question = result.questions[questionIndex++];
+          return {
+            key: makeKey(),
+            type: question.questionType,
+            ...question,
+            answerText: question.answerText,
+            sectionNumber: groupIndex + 1,
+            sectionDifficulty: group.difficulty,
+            aiGenerated: true,
+          } satisfies QuestionDraft;
+        }),
       );
+      setQuestions(generatedQuestions);
       setFormErrors((current) => {
         const next = { ...current };
         for (const key of Object.keys(next)) {
@@ -583,7 +741,8 @@ export default function TeacherQuizzesScreen() {
     const hasDrafts = questions.some(
       (question) =>
         question.prompt.trim() ||
-        question.options.some((option) => option.trim()),
+        question.options.some((option) => option.trim()) ||
+        question.answerText.trim(),
     );
 
     if (hasDrafts) {
@@ -604,6 +763,8 @@ export default function TeacherQuizzesScreen() {
 
     const context = resolveAiContext();
     if (!context) return;
+    const targetQuestion = questions.find((question) => question.key === key);
+    if (!targetQuestion) return;
 
     setRegeneratingKey(key);
 
@@ -611,8 +772,9 @@ export default function TeacherQuizzesScreen() {
       mode: "quiz",
       subject: context.subject,
       topic: context.topic,
-      difficulty: form.difficulty,
+      difficulty: targetQuestion.sectionDifficulty,
       questionCount: 1,
+      questionType: targetQuestion.type,
       materialId: aiMaterialId || undefined,
     });
 
@@ -635,8 +797,11 @@ export default function TeacherQuizzesScreen() {
         question.key === key
           ? {
               key: question.key,
-              type: "multiple_choice",
+              type: generated.questionType,
               ...generated,
+              answerText: "",
+              sectionNumber: question.sectionNumber,
+              sectionDifficulty: question.sectionDifficulty,
               aiGenerated: true,
             }
           : question,
@@ -669,6 +834,10 @@ export default function TeacherQuizzesScreen() {
       errors.description = "Description must be 2000 characters or fewer.";
     }
 
+    if (questions.length === 0) {
+      errors.questions = "Generate questions with AI before saving this quiz.";
+    }
+
     // Every question needs a prompt and at least two filled options.
     questions.forEach((question, index) => {
       const prompt = question.prompt.trim();
@@ -682,12 +851,21 @@ export default function TeacherQuizzesScreen() {
       } else if (prompt.length > 1000) {
         errors[`question-${question.key}`] =
           `Question ${index + 1} must be 1000 characters or fewer.`;
-      } else if (filledOptions.length < 2) {
+      } else if (
+        (question.type === "multiple_choice" || question.type === "true_false") &&
+        filledOptions.length < 2
+      ) {
         errors[`question-${question.key}`] =
           `Question ${index + 1} needs at least two answers.`;
-      } else if (!question.options[question.correctIndex]?.trim()) {
+      } else if (
+        (question.type === "multiple_choice" || question.type === "true_false") &&
+        !question.options[question.correctIndex]?.trim()
+      ) {
         errors[`question-${question.key}`] =
           `Question ${index + 1} needs a correct answer selected.`;
+      } else if (!["multiple_choice", "true_false"].includes(question.type) && !question.answerText.trim()) {
+        errors[`question-${question.key}`] =
+          `Question ${index + 1} needs a correct answer.`;
       }
     });
 
@@ -733,11 +911,16 @@ export default function TeacherQuizzesScreen() {
             ? editingStatus
             : "draft";
 
+      const sectionDifficultySet = new Set(questions.map((question) => question.sectionDifficulty));
+      const overallDifficulty: Difficulty = sectionDifficultySet.size === 1
+        ? questions[0]?.sectionDifficulty ?? "medium"
+        : "mixed";
+
       const payload = {
         title: form.title.trim(),
         subject: form.subject.trim(),
         topic: form.topic.trim(),
-        difficulty: form.difficulty,
+        difficulty: overallDifficulty,
         description: form.description.trim(),
         status: nextStatus,
         updated_at: new Date().toISOString(),
@@ -787,8 +970,18 @@ export default function TeacherQuizzesScreen() {
           quiz_id: quizId,
           position: index + 1,
           prompt: question.prompt.trim(),
-          options: normalized.options,
+          options:
+            question.type === "multiple_choice" || question.type === "true_false"
+              ? normalized.options
+              : ["", ""],
           correct_index: normalized.correctIndex,
+          question_type: question.type,
+          section_number: question.sectionNumber,
+          section_difficulty: question.sectionDifficulty,
+          answer_text:
+            question.type === "enumeration"
+              ? question.answerText.trim().split(/\r?\n|,/).map((answer) => answer.trim()).filter(Boolean).join(", ")
+              : question.answerText.trim(),
           explanation: question.explanation.trim(),
         };
       });
@@ -822,8 +1015,9 @@ export default function TeacherQuizzesScreen() {
       setFormErrors({});
       await loadQuizzes("refresh");
     } catch (err) {
-      const message =
+      const rawMessage =
         err instanceof Error ? err.message : "Something went wrong.";
+      const message = quizQuestionSchemaHint(rawMessage);
       console.error("Quiz save error:", err);
       showNotice("Save Failed", message);
     } finally {
@@ -941,19 +1135,27 @@ export default function TeacherQuizzesScreen() {
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
       <ScreenTitle
         title="Quizzes"
-        subtitle="Create, review, and publish quizzes for your students"
+        subtitle="Build AI-drafted quizzes, review sections, and publish for students"
         right={
           <Pressable
-            onPress={openCreate}
+            onPress={() => {
+              if (!AI_ENABLED) {
+                showNotice("AI Unavailable", "AI quiz creation is disabled in this build.");
+                return;
+              }
+              openCreate();
+            }}
+            disabled={!AI_ENABLED}
             accessibilityRole="button"
-            accessibilityLabel="Create a new quiz"
+            accessibilityLabel="Create a quiz with AI"
             style={({ pressed }) => [
               styles.newButton,
+              !AI_ENABLED && styles.disabled,
               pressed && styles.pressed,
             ]}
           >
-            <Ionicons name="add" size={20} color="#FFFFFF" />
-            <Text style={styles.newButtonText}>New</Text>
+            <Ionicons name="sparkles" size={16} color="#FFFFFF" />
+            <Text style={styles.newButtonText}>Create with AI</Text>
           </Pressable>
         }
       />
@@ -1197,7 +1399,7 @@ export default function TeacherQuizzesScreen() {
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
-                {editingId ? "Edit Quiz" : "New Quiz"}
+                {editingId ? "Edit Quiz" : "Create Quiz with AI"}
               </Text>
 
               <Pressable
@@ -1245,54 +1447,63 @@ export default function TeacherQuizzesScreen() {
               )}
 
               <Text style={styles.label}>Topic</Text>
-              <TextInput
-                value={form.topic}
-                onChangeText={(value) =>
-                  setForm((current) => ({ ...current, topic: value }))
-                }
-                placeholder="e.g. The Cell"
-                placeholderTextColor="#9AA69E"
-                style={[styles.input, formErrors.topic && styles.inputError]}
-                accessibilityLabel="Quiz topic"
-              />
+              <View style={[styles.topicInputWrap, formErrors.topic && styles.inputError]}>
+                <TextInput
+                  value={form.topic}
+                  onChangeText={(value) => {
+                    setForm((current) => ({ ...current, topic: value }));
+                    setTopicDropdownOpen(true);
+                  }}
+                  onFocus={() => setTopicDropdownOpen(true)}
+                  placeholder="Search or enter a topic"
+                  placeholderTextColor="#9AA69E"
+                  style={styles.topicInput}
+                  accessibilityLabel="Search or enter quiz topic"
+                />
+                <Pressable
+                  onPress={() => setTopicDropdownOpen((open) => !open)}
+                  accessibilityRole="button"
+                  accessibilityLabel={topicDropdownOpen ? "Close topic suggestions" : "Show topic suggestions"}
+                  hitSlop={8}
+                >
+                  <Ionicons name={topicDropdownOpen ? "chevron-up" : "chevron-down"} size={18} color={colors.textMuted} />
+                </Pressable>
+              </View>
               {formErrors.topic && (
                 <Text style={styles.errorText}>{formErrors.topic}</Text>
               )}
-
-              <Text style={styles.label}>Difficulty</Text>
-              <View style={styles.difficultyRow}>
-                {DIFFICULTIES.map((option) => {
-                  const active = form.difficulty === option.value;
-
-                  return (
-                    <Pressable
-                      key={option.value}
-                      onPress={() =>
-                        setForm((current) => ({
-                          ...current,
-                          difficulty: option.value,
-                        }))
-                      }
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: active }}
-                      style={({ pressed }) => [
-                        styles.difficultyChip,
-                        active && styles.difficultyChipActive,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.difficultyChipText,
-                          active && styles.difficultyChipTextActive,
-                        ]}
+              {topicDropdownOpen ? (
+                <View style={styles.topicDropdown}>
+                  <Text style={styles.topicDropdownLabel}>
+                    {form.subject.trim() ? `Suggested for ${form.subject.trim()}` : "Suggested topics from your materials"}
+                  </Text>
+                  <ScrollView style={styles.topicSuggestions} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {filteredTopics.map((topic) => (
+                      <Pressable
+                        key={topic}
+                        onPress={() => {
+                          setForm((current) => ({ ...current, topic }));
+                          setTopicDropdownOpen(false);
+                        }}
+                        accessibilityRole="button"
+                        style={styles.topicSuggestion}
                       >
-                        {option.label}
-                      </Text>
+                        <Ionicons name="pricetag-outline" size={15} color={GREEN} />
+                        <Text style={styles.topicSuggestionText} numberOfLines={1}>{topic}</Text>
+                        {form.topic === topic ? <Ionicons name="checkmark" size={16} color={GREEN} /> : null}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                  {form.topic.trim() ? (
+                    <Pressable onPress={() => setTopicDropdownOpen(false)} style={styles.topicSuggestion} accessibilityRole="button">
+                      <Ionicons name="add-circle-outline" size={16} color={GREEN} />
+                      <Text style={styles.topicSuggestionText}>Use “{form.topic.trim()}” as a new topic</Text>
                     </Pressable>
-                  );
-                })}
-              </View>
+                  ) : filteredTopics.length === 0 ? (
+                    <Text style={styles.topicEmpty}>Type a topic to create a new one.</Text>
+                  ) : null}
+                </View>
+              ) : null}
 
               <Text style={styles.label}>Description</Text>
               <TextInput
@@ -1337,63 +1548,95 @@ export default function TeacherQuizzesScreen() {
                     materials. Review every answer before publishing.
                   </Text>
 
-                  <Text style={styles.aiLabel}>Questions</Text>
-                  <View style={styles.aiChipRow}>
-                    {[10, 20, 30].map((count) => {
-                      const active = aiCountValid && parsedAiCount === count;
+                  <View style={styles.groupsHeading}>
+                    <View style={styles.groupsHeadingCopy}>
+                      <Text style={styles.aiLabel}>Question groups</Text>
+                      <Text style={styles.groupsHint}>Combine question types in one quiz and set a difficulty for each section.</Text>
+                    </View>
+                    <Text style={[styles.totalCount, aiTotalCount > 50 && styles.totalCountError]}>{aiTotalCount}/50</Text>
+                  </View>
 
-                      return (
-                        <Pressable
-                          key={count}
-                          onPress={() => setAiCountText(String(count))}
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: active }}
-                          style={[
-                            styles.aiChip,
-                            active && styles.aiChipActive,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.aiChipText,
-                              active && styles.aiChipTextActive,
-                            ]}
+                  {aiGroups.map((group, index) => (
+                    <View key={group.id} style={styles.groupCard}>
+                      <View style={styles.groupCardHeader}>
+                        <Text style={styles.groupTitle}>Section {index + 1}</Text>
+                        {aiGroups.length > 1 ? (
+                          <Pressable
+                            onPress={() => setAiGroups((current) => current.filter((entry) => entry.id !== group.id))}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove section ${index + 1}`}
+                            hitSlop={8}
                           >
-                            {count}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
+                            <Ionicons name="trash-outline" size={16} color={colors.danger} />
+                          </Pressable>
+                        ) : null}
+                      </View>
+                      <View style={styles.groupTypeRow}>
+                        {AI_QUESTION_TYPES.map((option) => {
+                          const active = group.questionType === option.value;
+                          return (
+                            <Pressable
+                              key={option.value}
+                              onPress={() => updateAiGroup(group.id, { questionType: option.value })}
+                              accessibilityRole="button"
+                              accessibilityState={{ selected: active }}
+                              style={[styles.aiChip, active && styles.aiChipActive]}
+                            >
+                              <Text style={[styles.aiChipText, active && styles.aiChipTextActive]}>{option.label}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                      <View style={styles.groupDifficultyRow}>
+                        <Text style={styles.groupDifficultyLabel}>Difficulty</Text>
+                        <View style={styles.groupDifficultyChoices}>
+                          {DIFFICULTIES.map((option) => {
+                            const active = group.difficulty === option.value;
+                            return (
+                              <Pressable
+                                key={option.value}
+                                onPress={() => updateAiGroup(group.id, { difficulty: option.value })}
+                                accessibilityRole="button"
+                                accessibilityState={{ selected: active }}
+                                style={[styles.groupDifficultyChip, active && styles.groupDifficultyChipActive]}
+                              >
+                                <Text style={[styles.groupDifficultyText, active && styles.groupDifficultyTextActive]}>
+                                  {option.label}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      </View>
+                      <View style={styles.groupCountRow}>
+                        <Text style={styles.groupCountLabel}>Questions in this section</Text>
+                        <TextInput
+                          value={group.countText}
+                          onChangeText={(value) => updateAiGroup(group.id, { countText: value.replace(/[^0-9]/g, "").slice(0, 2) })}
+                          keyboardType="number-pad"
+                          maxLength={2}
+                          selectTextOnFocus
+                          style={[styles.aiCountInput, styles.groupCountInput]}
+                          accessibilityLabel={`Question count for section ${index + 1}`}
+                        />
+                      </View>
+                    </View>
+                  ))}
 
-                  <View style={styles.aiCustomRow}>
-                    <Text style={styles.aiCustomLabel}>Custom</Text>
-                    <TextInput
-                      value={aiCountText}
-                      onChangeText={handleAiCountChange}
-                      keyboardType="number-pad"
-                      maxLength={2}
-                      selectTextOnFocus
-                      placeholder="10"
-                      placeholderTextColor={colors.textFaint}
-                      accessibilityLabel="Custom number of questions"
-                      accessibilityHint="Enter a number from 1 to 50"
-                      style={[
-                        styles.aiCountInput,
-                        !aiCountValid && styles.inputError,
-                      ]}
-                    />
-                    <Text style={styles.aiCustomRange}>1–50 questions</Text>
-                  </View>
+                  <Pressable
+                    onPress={addAiGroup}
+                    disabled={aiGroups.length >= 6 || aiTotalCount >= 50}
+                    accessibilityRole="button"
+                    style={[styles.addGroupButton, (aiGroups.length >= 6 || aiTotalCount >= 50) && styles.disabled]}
+                  >
+                    <Ionicons name="add-circle-outline" size={17} color={GREEN} />
+                    <Text style={styles.addGroupText}>Add question section</Text>
+                  </Pressable>
 
-                  {!aiCountValid ? (
-                    <Text style={styles.errorText}>
-                      Enter a number from 1 to 50.
-                    </Text>
+                  {!aiGroupsValid ? (
+                    <Text style={styles.errorText}>Each section needs at least 1 question, with no more than 50 total.</Text>
                   ) : (
-                    <Text style={styles.aiCountHint}>
-                      Large drafts can take up to a minute.
-                    </Text>
+                    <Text style={styles.aiCountHint}>The AI drafts all sections together; review every answer before publishing.</Text>
                   )}
 
                   <Text style={styles.aiLabel}>Source material</Text>
@@ -1423,7 +1666,7 @@ export default function TeacherQuizzesScreen() {
                       </Text>
                     </Pressable>
 
-                    {materials.map((material) => {
+                    {subjectMaterials.map((material) => {
                       const active = aiMaterialId === material.id;
 
                       return (
@@ -1459,7 +1702,7 @@ export default function TeacherQuizzesScreen() {
                       saving ||
                       !!regeneratingKey ||
                       !questionsReady ||
-                      !aiCountValid
+                      !aiGroupsValid
                     }
                     accessibilityRole="button"
                     accessibilityLabel="Generate quiz questions with AI"
@@ -1469,7 +1712,7 @@ export default function TeacherQuizzesScreen() {
                         saving ||
                         !!regeneratingKey ||
                         !questionsReady ||
-                        !aiCountValid) &&
+                        !aiGroupsValid) &&
                         styles.disabled,
                       pressed && styles.pressed,
                     ]}
@@ -1482,9 +1725,9 @@ export default function TeacherQuizzesScreen() {
                       <>
                         <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
                         <Text style={styles.aiGenerateText}>
-                          {aiCountValid
-                            ? `Generate ${parsedAiCount} questions`
-                            : "Enter a question count"}
+                          {aiGroupsValid
+                            ? `Generate ${aiTotalCount} questions`
+                            : "Adjust question groups"}
                         </Text>
                       </>
                     )}
@@ -1500,8 +1743,19 @@ export default function TeacherQuizzesScreen() {
                 </Text>
               </View>
 
-              {questions.map((question, index) => (
-                <View key={question.key} style={styles.questionCard}>
+              {questions.map((question, index) => {
+                const section = questionSectionAt(questions, index);
+                return (
+                <View key={question.key}>
+                  {section.start === index ? (
+                    <View style={styles.questionSectionHeader}>
+                      <View style={styles.questionSectionNumber}><Text style={styles.questionSectionNumberText}>{section.section}</Text></View>
+                      <Text style={styles.questionSectionTitle}>Section {section.section} · {questionTypeLabel(question.type)}</Text>
+                      <Text style={styles.questionSectionDifficulty}>{difficultyLabel(question.sectionDifficulty)}</Text>
+                      <Text style={styles.questionSectionCount}>{section.count} {section.count === 1 ? "question" : "questions"}</Text>
+                    </View>
+                  ) : null}
+                  <View style={styles.questionCard}>
                   <View style={styles.questionTop}>
                     <View style={styles.questionTopLeft}>
                       <Text style={styles.questionNumber}>
@@ -1572,6 +1826,8 @@ export default function TeacherQuizzesScreen() {
                       [
                         { label: "Multiple choice", value: "multiple_choice" },
                         { label: "True / False", value: "true_false" },
+                        { label: "Enumeration", value: "enumeration" },
+                        { label: "Identification", value: "identification" },
                       ] as const
                     ).map((option) => {
                       const active = question.type === option.value;
@@ -1619,11 +1875,29 @@ export default function TeacherQuizzesScreen() {
                     accessibilityLabel={`Question ${index + 1} text`}
                   />
 
+                  {question.type === "multiple_choice" || question.type === "true_false" ? (
                   <Text style={styles.optionsLabel}>
                     Answers (tap the circle to mark the correct one)
                   </Text>
+                  ) : (
+                    <>
+                      <Text style={styles.optionsLabel}>
+                        {question.type === "enumeration" ? "Expected answers (one per line or comma separated)" : "Correct answer"}
+                      </Text>
+                      <TextInput
+                        value={question.answerText}
+                        onChangeText={(value) => updateQuestion(question.key, (current) => ({ ...current, answerText: value }))}
+                        placeholder={question.type === "enumeration" ? "First answer\nSecond answer" : "Type the correct answer"}
+                        placeholderTextColor="#9AA69E"
+                        multiline={question.type === "enumeration"}
+                        textAlignVertical="top"
+                        style={[styles.input, styles.questionInput]}
+                        accessibilityLabel={`Question ${index + 1} correct answer`}
+                      />
+                    </>
+                  )}
 
-                  {question.options.map((option, optionIndex) => {
+                  {question.type === "multiple_choice" || question.type === "true_false" ? question.options.map((option, optionIndex) => {
                     const isCorrect = question.correctIndex === optionIndex;
                     const isTrueFalse = question.type === "true_false";
 
@@ -1711,7 +1985,7 @@ export default function TeacherQuizzesScreen() {
                         )}
                       </View>
                     );
-                  })}
+                  }) : null}
 
                   {question.type === "multiple_choice" &&
                     question.options.length < OPTION_LABELS.length && (
@@ -1752,20 +2026,33 @@ export default function TeacherQuizzesScreen() {
                       {formErrors[`question-${question.key}`]}
                     </Text>
                   )}
+                  </View>
                 </View>
-              ))}
+                );
+              })}
 
-              <Pressable
-                onPress={addQuestion}
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  styles.addQuestionButton,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Ionicons name="add-circle-outline" size={18} color={GREEN} />
-                <Text style={styles.addQuestionText}>Add another question</Text>
-              </Pressable>
+              {formErrors.questions ? (
+                <Text style={styles.errorText}>{formErrors.questions}</Text>
+              ) : null}
+              {questions.length === 0 ? (
+                <View style={styles.emptyQuestions}>
+                  <Ionicons name="sparkles-outline" size={20} color={GREEN} />
+                  <Text style={styles.emptyQuestionsText}>Choose your sections above, then generate a draft for review.</Text>
+                </View>
+              ) : null}
+              {editingId ? (
+                <Pressable
+                  onPress={addQuestion}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [
+                    styles.addQuestionButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color={GREEN} />
+                  <Text style={styles.addQuestionText}>Add question</Text>
+                </Pressable>
+              ) : null}
             </ScrollView>
 
             <View style={styles.modalActions}>
@@ -1842,10 +2129,10 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     backgroundColor: GREEN,
     borderRadius: radius.md,
-    paddingHorizontal: spacing.lg - 2,
+    paddingHorizontal: spacing.md,
     minHeight: 42,
   },
-  newButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
+  newButtonText: { color: "#FFFFFF", fontSize: 12, fontWeight: "800" },
   listContent: {
     paddingHorizontal: spacing.xl,
     paddingBottom: spacing.xxxl + 8,
@@ -1977,22 +2264,34 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     minHeight: 48,
   },
-  textarea: { minHeight: 88, paddingTop: spacing.md },
-  inputError: { borderColor: colors.danger },
-  errorText: { fontSize: 12, color: colors.danger, marginTop: 6 },
-  difficultyRow: { flexDirection: "row", gap: spacing.sm + 1 },
-  difficultyChip: {
-    flex: 1,
-    backgroundColor: "#F7FAF8",
+  topicInputWrap: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md + 1,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.md,
-    paddingVertical: spacing.md - 1,
-    alignItems: "center",
+    backgroundColor: "#F7FAF8",
   },
-  difficultyChipActive: { backgroundColor: GREEN, borderColor: GREEN },
-  difficultyChipText: { fontSize: 13, fontWeight: "700", color: "#4A5F52" },
-  difficultyChipTextActive: { color: "#FFFFFF" },
+  topicInput: { flex: 1, minWidth: 0, minHeight: 46, fontSize: 14, color: colors.textPrimary },
+  topicDropdown: {
+    marginTop: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+  },
+  topicDropdownLabel: { color: colors.textMuted, fontSize: 10, fontWeight: "800", marginHorizontal: spacing.sm, marginTop: spacing.xs, marginBottom: spacing.xs },
+  topicSuggestions: { maxHeight: 150 },
+  topicSuggestion: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.sm, borderRadius: radius.sm },
+  topicSuggestionText: { flex: 1, color: colors.textPrimary, fontSize: 12, fontWeight: "600" },
+  topicEmpty: { color: colors.textMuted, fontSize: 11, padding: spacing.sm },
+  textarea: { minHeight: 88, paddingTop: spacing.md },
+  inputError: { borderColor: colors.danger },
+  errorText: { fontSize: 12, color: colors.danger, marginTop: 6 },
   aiPanel: {
     marginTop: spacing.md + 2,
     backgroundColor: "#F3F9F5",
@@ -2010,6 +2309,27 @@ const styles = StyleSheet.create({
   aiPanelTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   aiPanelTitle: { fontSize: 13, fontWeight: "800", color: DARK_GREEN },
   aiHint: { fontSize: 11, lineHeight: 16, color: "#5B7163" },
+  groupsHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+  groupsHeadingCopy: { flex: 1, gap: 2 },
+  groupsHint: { color: colors.textMuted, fontSize: 10, lineHeight: 14 },
+  totalCount: { color: GREEN, fontSize: 12, fontWeight: "800" },
+  totalCountError: { color: colors.danger },
+  groupCard: { gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: "#FFFFFF" },
+  groupCardHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  groupTitle: { color: DARK_GREEN, fontSize: 12, fontWeight: "800" },
+  groupTypeRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  groupDifficultyRow: { gap: 7 },
+  groupDifficultyLabel: { color: colors.textMuted, fontSize: 10, fontWeight: "700" },
+  groupDifficultyChoices: { flexDirection: "row", gap: 6 },
+  groupDifficultyChip: { flex: 1, minHeight: 34, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  groupDifficultyChipActive: { backgroundColor: colors.primarySoft, borderColor: GREEN },
+  groupDifficultyText: { color: colors.textMuted, fontSize: 11, fontWeight: "700" },
+  groupDifficultyTextActive: { color: GREEN },
+  groupCountRow: { minHeight: 36, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+  groupCountLabel: { flex: 1, color: colors.textMuted, fontSize: 11, fontWeight: "600" },
+  groupCountInput: { width: 58 },
+  addGroupButton: { minHeight: 40, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, borderWidth: 1, borderStyle: "dashed", borderColor: "#BBD7C5", borderRadius: radius.md, backgroundColor: "#F8FCF9" },
+  addGroupText: { color: GREEN, fontSize: 12, fontWeight: "800" },
   aiLabel: {
     fontSize: 10,
     fontWeight: "800",
@@ -2019,13 +2339,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   aiChipRow: { flexDirection: "row", gap: 7 },
-  aiCustomRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginTop: 2,
-  },
-  aiCustomLabel: { fontSize: 12, fontWeight: "700", color: "#43584A" },
   aiCountInput: {
     width: 58,
     minHeight: 36,
@@ -2040,7 +2353,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: DARK_GREEN,
   },
-  aiCustomRange: { fontSize: 11, color: "#6B7F72" },
   aiCountHint: { fontSize: 10, lineHeight: 14, color: "#6B7F72" },
   aiMaterialRow: { flexDirection: "row", gap: 7, paddingRight: 4 },
   aiChip: {
@@ -2095,6 +2407,14 @@ const styles = StyleSheet.create({
     color: "#5A6D60",
   },
   questionTypeTextActive: { color: GREEN },
+  questionSectionHeader: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.md },
+  questionSectionNumber: { width: 24, height: 24, borderRadius: 12, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
+  questionSectionNumberText: { color: GREEN, fontSize: 11, fontWeight: "800" },
+  questionSectionTitle: { flex: 1, color: DARK_GREEN, fontSize: 12, fontWeight: "800" },
+  questionSectionCount: { color: colors.textMuted, fontSize: 10, fontWeight: "700" },
+  questionSectionDifficulty: { color: GREEN, fontSize: 10, fontWeight: "800" },
+  emptyQuestions: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceAlt },
+  emptyQuestionsText: { flex: 1, color: colors.textMuted, fontSize: 11, lineHeight: 16 },
   questionTopLeft: { flexDirection: "row", alignItems: "center", gap: 7 },
   questionTopActions: { flexDirection: "row", alignItems: "center", gap: 12 },
   aiBadge: {

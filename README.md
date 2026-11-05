@@ -47,17 +47,23 @@ Supabase (Postgres + Auth + Edge Functions).
    ai_settings.sql
    ai_usage.sql
    teacher_features.sql
+   quiz_question_types.sql
+   teacher_student_messages.sql
    ai_reports.sql
    approve_registration.sql
    account_deletion.sql
    reconcile_approved_roles.sql
    ```
 
-4. Deploy the Edge Functions and provide their secrets (`GEMINI_API_KEY`,
-   service-role key, etc.):
+4. Deploy the Edge Functions and configure their Supabase secrets. Set
+   `GROQ_API_KEY` for `study-buddy`, `teacher-ai-generator`, and
+   `teacher-ai-buddy`; optionally set
+   `GROQ_MODEL` (defaults to `openai/gpt-oss-20b`). Keep `GEMINI_API_KEY` for
+   material extraction, indexing, and student practice, along with the Supabase
+   service-role key and other required secrets:
 
    ```bash
-   npx supabase functions deploy study-buddy materials-index materials-extract teacher-ai-generator
+   npx supabase functions deploy study-buddy materials-index materials-extract teacher-ai-generator teacher-ai-buddy
    npx supabase functions deploy send-verification-code verify-registration-code delete-account
    ```
 
@@ -66,8 +72,9 @@ Supabase (Postgres + Auth + Edge Functions).
    Supabase Free plan and Gemini PDF maximum. `materials-extract` uses Gemini's
    Files API for PDFs over 15 MB, while DOCX/PPTX extraction runs without AI.
    A file stays attached and can still be published if text extraction fails.
-   AI requests retry transient Gemini 5xx responses and fall back from the
-   configured model to `gemini-3.6-flash` when the primary model is unavailable.
+   Groq handles student and teacher AI Buddy chats plus teacher lesson/quiz drafts. Gemini remains
+   in use for material processing and student practice. Both providers retry
+   transient failures according to their Edge Function request policies.
 
 ## Automatic Android APK builds
 

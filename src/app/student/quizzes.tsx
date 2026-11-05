@@ -24,7 +24,7 @@ const GREEN = colors.primary;
 const DARK_GREEN = colors.primaryDeep;
 const BG = colors.background;
 
-type Difficulty = "easy" | "medium" | "hard";
+type Difficulty = "easy" | "medium" | "hard" | "mixed";
 
 type QuizRow = {
   id: string;

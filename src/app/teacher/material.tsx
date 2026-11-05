@@ -15,7 +15,12 @@ import {
 } from "@/utils/materialFiles";
 import { indexMaterial } from "@/utils/materialsIndex";
 import { confirmAction, showNotice } from "@/utils/notify";
-import { generateTeacherAi } from "@/utils/teacherAi";
+import {
+  generateTeacherAi,
+  type TeacherAiDetailLevel,
+  type TeacherAiDraftType,
+  type TeacherAiGradeLevel,
+} from "@/utils/teacherAi";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
@@ -24,7 +29,7 @@ import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import type { DocumentPickerAsset } from "expo-document-picker";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
@@ -91,6 +96,25 @@ const FILTERS: { label: string; value: FilterValue }[] = [
   { label: "Drafts", value: "draft" },
   { label: "Published", value: "published" },
   { label: "Archived", value: "archived" },
+];
+
+const AI_DRAFT_TYPES: { label: string; value: TeacherAiDraftType }[] = [
+  { label: "Lesson outline", value: "lesson" },
+  { label: "Summary", value: "summary" },
+  { label: "Objectives", value: "objectives" },
+  { label: "Examples", value: "examples" },
+  { label: "Review questions", value: "review_questions" },
+];
+const AI_GRADE_LEVELS: { label: string; value: TeacherAiGradeLevel }[] = [
+  { label: "General", value: "general" },
+  { label: "Elementary", value: "elementary" },
+  { label: "Secondary", value: "secondary" },
+  { label: "College", value: "college" },
+];
+const AI_DETAIL_LEVELS: { label: string; value: TeacherAiDetailLevel }[] = [
+  { label: "Brief", value: "brief" },
+  { label: "Balanced", value: "balanced" },
+  { label: "Detailed", value: "detailed" },
 ];
 
 function extractionStatusFrom(value: unknown): MaterialExtractionStatus {
@@ -194,6 +218,7 @@ function mapMaterialRow(row: Record<string, unknown>): Material {
 }
 
 export default function TeacherMaterialsScreen() {
+  const { aiDraft } = useLocalSearchParams<{ aiDraft?: string }>();
   const [items, setItems] = useState<Material[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -212,6 +237,11 @@ export default function TeacherMaterialsScreen() {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [drafting, setDrafting] = useState(false);
+  const [aiDraftOptionsOpen, setAiDraftOptionsOpen] = useState(false);
+  const [aiDraftType, setAiDraftType] = useState<TeacherAiDraftType>("lesson");
+  const [aiGradeLevel, setAiGradeLevel] = useState<TeacherAiGradeLevel>("secondary");
+  const [aiDetailLevel, setAiDetailLevel] = useState<TeacherAiDetailLevel>("balanced");
+  const [useMaterialAsSource, setUseMaterialAsSource] = useState(true);
   const [actionId, setActionId] = useState<string | null>(null);
   const [pendingFile, setPendingFile] =
     useState<DocumentPickerAsset | null>(null);
@@ -342,15 +372,34 @@ export default function TeacherMaterialsScreen() {
     });
   }, [items, search, filter]);
 
-  const openCreate = () => {
+  const openCreate = useCallback(() => {
     setEditingId(null);
     setEditingStatus("draft");
     setForm(EMPTY_FORM);
     setFormErrors({});
     setPendingFile(null);
     setRemoveExistingFile(false);
+    setAiDraftOptionsOpen(false);
+    setAiDraftType("lesson");
+    setAiGradeLevel("secondary");
+    setAiDetailLevel("balanced");
+    setUseMaterialAsSource(true);
     setModalVisible(true);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (typeof aiDraft !== "string" || !aiDraft.trim()) return;
+    const timer = setTimeout(() => {
+      openCreate();
+      setForm((current) => ({
+        ...current,
+        title: "AI Buddy draft",
+        content: aiDraft.slice(0, 20000),
+      }));
+      router.setParams({ aiDraft: undefined });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [aiDraft, openCreate]);
 
   const openEdit = (item: Material) => {
     setEditingId(item.id);
@@ -365,6 +414,11 @@ export default function TeacherMaterialsScreen() {
     setFormErrors({});
     setPendingFile(null);
     setRemoveExistingFile(false);
+    setAiDraftOptionsOpen(false);
+    setAiDraftType("lesson");
+    setAiGradeLevel("secondary");
+    setAiDetailLevel("balanced");
+    setUseMaterialAsSource(true);
     setModalVisible(true);
   };
 
@@ -400,9 +454,8 @@ export default function TeacherMaterialsScreen() {
     }
   };
 
-  const handleAiDraft = async () => {
+  const handleAiDraft = () => {
     if (drafting || saving) return;
-
     const subject = form.subject.trim();
     const topic = form.topic.trim() || form.title.trim();
 
@@ -415,32 +468,59 @@ export default function TeacherMaterialsScreen() {
       return;
     }
 
-    setDrafting(true);
+    const runDraft = async () => {
+      setDrafting(true);
+      try {
+        const result = await generateTeacherAi({
+          mode: "topic",
+          subject,
+          topic,
+          difficulty: "medium",
+          draftType: aiDraftType,
+          gradeLevel: aiGradeLevel,
+          detailLevel: aiDetailLevel,
+          materialId: useMaterialAsSource ? editingId ?? undefined : undefined,
+        });
 
-    const result = await generateTeacherAi({
-      mode: "topic",
-      subject,
-      topic,
-      difficulty: "medium",
-    });
+        if (result.status !== "ok") {
+          showNotice("AI Draft Failed", result.message);
+          return;
+        }
 
-    setDrafting(false);
+        if (result.mode !== "topic") {
+          showNotice("AI Draft Failed", "The AI returned an unexpected draft.");
+          return;
+        }
 
-    if (result.status !== "ok") {
-      showNotice("AI Draft Failed", result.message);
+        setForm((current) => ({ ...current, content: result.content }));
+        setFormErrors((current) => ({ ...current, content: "" }));
+        setAiDraftOptionsOpen(false);
+      } catch (error) {
+        showNotice(
+          "AI Draft Failed",
+          error instanceof Error ? error.message : "Please try again.",
+        );
+      } finally {
+        setDrafting(false);
+      }
+    };
+
+    if (form.content.trim()) {
+      confirmAction(
+        "Replace lesson content?",
+        "The new AI draft will replace the current text. You can review it before saving the material.",
+        runDraft,
+        { confirmLabel: "Replace", destructive: true },
+      );
       return;
     }
 
-    if (result.mode !== "topic") {
-      showNotice("AI Draft Failed", "The AI returned an unexpected draft.");
-      return;
-    }
-
-    setForm((current) => ({ ...current, content: result.content }));
+    void runDraft();
   };
 
   const runMaterialExtraction = async (
     materialId: string,
+    showFailureNotice = true,
   ): Promise<boolean> => {
     setItems((current) =>
       (current ?? []).map((row) =>
@@ -457,10 +537,12 @@ export default function TeacherMaterialsScreen() {
     const result = await requestMaterialExtraction(materialId);
 
     if (!result.ok) {
-      showNotice(
-        "Text Extraction Failed",
-        `${result.message} The file is still attached, so you can preview or download it.`,
-      );
+      if (showFailureNotice) {
+        showNotice(
+          "File Text Unavailable",
+          "The attachment is still available, but its text could not be extracted. Groq can still draft from the subject and topic. Retry extraction if you want the draft grounded in the file.",
+        );
+      }
       await loadMaterials("refresh");
       return false;
     }
@@ -478,7 +560,23 @@ export default function TeacherMaterialsScreen() {
   const handleSave = async (status: MaterialStatus) => {
     if (saving || drafting) return;
 
-    const errors = validateForm(form);
+    // Start a new material with only its title and source file. Once the file
+    // is safely attached, reveal the editable teaching details in this form.
+    if (!editingId) {
+      const title = form.title.trim();
+      if (title.length < 2 || title.length > 150) {
+        setFormErrors({
+          title: "Enter a title with 2 to 150 characters.",
+        });
+        return;
+      }
+      if (!pendingFile) {
+        showNotice("Attach a File", "Choose a material file before continuing.");
+        return;
+      }
+    }
+
+    const errors = editingId ? validateForm(form) : {};
     setFormErrors(errors);
 
     if (Object.keys(errors).length > 0) return;
@@ -521,15 +619,17 @@ export default function TeacherMaterialsScreen() {
       // silently unpublish an already-published material, so when editing we
       // keep the row's existing status unless the user chose to publish.
       const nextStatus: MaterialStatus =
-        status === "published"
+        !editingId
+          ? "draft"
+          : status === "published"
           ? "published"
-          : editingId
-            ? editingStatus
-            : "draft";
+          : editingStatus;
 
       const payload: Record<string, unknown> = {
         title: form.title.trim(),
-        subject: form.subject.trim(),
+        // The current materials schema requires a subject. This temporary
+        // value is replaced when the teacher completes the details stage.
+        subject: form.subject.trim() || "Uncategorized",
         topic: form.topic.trim(),
         description: form.description.trim(),
         status: nextStatus,
@@ -597,6 +697,22 @@ export default function TeacherMaterialsScreen() {
         void removeMaterialFileQuietly(previousFile);
       }
 
+      if (!editingId && savedId) {
+        setEditingId(savedId);
+        setEditingStatus("draft");
+        setForm((current) => ({ ...current, subject: "" }));
+        setPendingFile(null);
+        setRemoveExistingFile(false);
+        setFormErrors({});
+        await loadMaterials("refresh");
+        void runMaterialExtraction(savedId, false);
+        showNotice(
+          "File Uploaded",
+          "Add the subject, topic, and description before publishing.",
+        );
+        return;
+      }
+
       setPendingFile(null);
       setRemoveExistingFile(false);
       setModalVisible(false);
@@ -608,7 +724,7 @@ export default function TeacherMaterialsScreen() {
       // after extraction so AI Buddy never quotes stale text.
       if (savedId && !groundingMissing) {
         if (uploadedFile) {
-          void runMaterialExtraction(savedId);
+          void runMaterialExtraction(savedId, false);
         } else {
           void indexMaterial(savedId).then((result) => {
             if (!result.ok) {
@@ -1284,56 +1400,68 @@ export default function TeacherMaterialsScreen() {
                 <Text style={styles.errorText}>{formErrors.title}</Text>
               )}
 
-              <Text style={styles.label}>Subject *</Text>
-              <TextInput
-                value={form.subject}
-                onChangeText={(value) =>
-                  setForm((current) => ({ ...current, subject: value }))
-                }
-                placeholder="e.g. Biology"
-                placeholderTextColor="#9AA69E"
-                style={[styles.input, formErrors.subject && styles.inputError]}
-                accessibilityLabel="Material subject"
-              />
-              {formErrors.subject && (
-                <Text style={styles.errorText}>{formErrors.subject}</Text>
-              )}
+              {editingId ? <Text style={styles.label}>Subject *</Text> : null}
+              {editingId ? (
+                <>
+                  <TextInput
+                    value={form.subject}
+                    onChangeText={(value) =>
+                      setForm((current) => ({ ...current, subject: value }))
+                    }
+                    placeholder="e.g. Biology"
+                    placeholderTextColor="#9AA69E"
+                    style={[styles.input, formErrors.subject && styles.inputError]}
+                    accessibilityLabel="Material subject"
+                  />
+                  {formErrors.subject && (
+                    <Text style={styles.errorText}>{formErrors.subject}</Text>
+                  )}
+                </>
+              ) : null}
 
-              <Text style={styles.label}>Topic</Text>
-              <TextInput
-                value={form.topic}
-                onChangeText={(value) =>
-                  setForm((current) => ({ ...current, topic: value }))
-                }
-                placeholder="e.g. Plant Cells"
-                placeholderTextColor="#9AA69E"
-                style={[styles.input, formErrors.topic && styles.inputError]}
-                accessibilityLabel="Material topic"
-              />
-              {formErrors.topic && (
-                <Text style={styles.errorText}>{formErrors.topic}</Text>
-              )}
+              {editingId ? <Text style={styles.label}>Topic</Text> : null}
+              {editingId ? (
+                <>
+                  <TextInput
+                    value={form.topic}
+                    onChangeText={(value) =>
+                      setForm((current) => ({ ...current, topic: value }))
+                    }
+                    placeholder="e.g. Plant Cells"
+                    placeholderTextColor="#9AA69E"
+                    style={[styles.input, formErrors.topic && styles.inputError]}
+                    accessibilityLabel="Material topic"
+                  />
+                  {formErrors.topic && (
+                    <Text style={styles.errorText}>{formErrors.topic}</Text>
+                  )}
+                </>
+              ) : null}
 
-              <Text style={styles.label}>Description</Text>
-              <TextInput
-                value={form.description}
-                onChangeText={(value) =>
-                  setForm((current) => ({ ...current, description: value }))
-                }
-                placeholder="What will students learn from this material?"
-                placeholderTextColor="#9AA69E"
-                multiline
-                textAlignVertical="top"
-                style={[
-                  styles.input,
-                  styles.textarea,
-                  formErrors.description && styles.inputError,
-                ]}
-                accessibilityLabel="Material description"
-              />
-              {formErrors.description && (
-                <Text style={styles.errorText}>{formErrors.description}</Text>
-              )}
+              {editingId ? <Text style={styles.label}>Description</Text> : null}
+              {editingId ? (
+                <>
+                  <TextInput
+                    value={form.description}
+                    onChangeText={(value) =>
+                      setForm((current) => ({ ...current, description: value }))
+                    }
+                    placeholder="What will students learn from this material?"
+                    placeholderTextColor="#9AA69E"
+                    multiline
+                    textAlignVertical="top"
+                    style={[
+                      styles.input,
+                      styles.textarea,
+                      formErrors.description && styles.inputError,
+                    ]}
+                    accessibilityLabel="Material description"
+                  />
+                  {formErrors.description && (
+                    <Text style={styles.errorText}>{formErrors.description}</Text>
+                  )}
+                </>
+              ) : null}
 
               {!filesMissing ? (
                 <>
@@ -1469,12 +1597,12 @@ export default function TeacherMaterialsScreen() {
                 </Text>
               )}
 
-              <View style={styles.contentLabelRow}>
+              {editingId ? <View style={styles.contentLabelRow}>
                 <Text style={styles.label}>Lesson Content</Text>
 
                 {AI_ENABLED && !groundingMissing ? (
                   <Pressable
-                    onPress={() => void handleAiDraft()}
+                    onPress={() => setAiDraftOptionsOpen((open) => !open)}
                     disabled={drafting || saving}
                     accessibilityRole="button"
                     accessibilityLabel="Draft lesson content with AI"
@@ -1493,19 +1621,129 @@ export default function TeacherMaterialsScreen() {
                     ) : (
                       <>
                         <Ionicons name="sparkles-outline" size={13} color={GREEN} />
-                        <Text style={styles.aiDraftText}>Draft with AI</Text>
+                        <Text style={styles.aiDraftText}>
+                          {aiDraftOptionsOpen ? "Close AI options" : "Draft with AI"}
+                        </Text>
                       </>
                     )}
                   </Pressable>
                 ) : null}
-              </View>
+              </View> : null}
 
-              {groundingMissing ? (
+              {editingId && aiDraftOptionsOpen && AI_ENABLED && !groundingMissing ? (
+                <View style={styles.aiOptionsCard}>
+                  <View style={styles.aiOptionsHeading}>
+                    <View style={styles.aiOptionsIcon}>
+                      <Ionicons name="sparkles" size={15} color={GREEN} />
+                    </View>
+                    <View style={styles.aiOptionsCopy}>
+                      <Text style={styles.aiOptionsTitle}>Build a teaching draft</Text>
+                      <Text style={styles.aiOptionsDescription}>
+                        Choose what Groq should prepare. You can edit the result before saving.
+                      </Text>
+                    </View>
+                  </View>
+
+                  <Text style={styles.aiOptionLabel}>Draft type</Text>
+                  <View style={styles.aiChipRow}>
+                    {AI_DRAFT_TYPES.map((option) => (
+                      <Pressable
+                        key={option.value}
+                        onPress={() => setAiDraftType(option.value)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: aiDraftType === option.value }}
+                        style={[styles.aiChip, aiDraftType === option.value && styles.aiChipActive]}
+                      >
+                        <Text style={[styles.aiChipText, aiDraftType === option.value && styles.aiChipTextActive]}>
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  <Text style={styles.aiOptionLabel}>Student level</Text>
+                  <View style={styles.aiChipRow}>
+                    {AI_GRADE_LEVELS.map((option) => (
+                      <Pressable
+                        key={option.value}
+                        onPress={() => setAiGradeLevel(option.value)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: aiGradeLevel === option.value }}
+                        style={[styles.aiChip, aiGradeLevel === option.value && styles.aiChipActive]}
+                      >
+                        <Text style={[styles.aiChipText, aiGradeLevel === option.value && styles.aiChipTextActive]}>
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  <Text style={styles.aiOptionLabel}>Amount of detail</Text>
+                  <View style={styles.aiChipRow}>
+                    {AI_DETAIL_LEVELS.map((option) => (
+                      <Pressable
+                        key={option.value}
+                        onPress={() => setAiDetailLevel(option.value)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: aiDetailLevel === option.value }}
+                        style={[styles.aiChip, aiDetailLevel === option.value && styles.aiChipActive]}
+                      >
+                        <Text style={[styles.aiChipText, aiDetailLevel === option.value && styles.aiChipTextActive]}>
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  <Pressable
+                    onPress={() => setUseMaterialAsSource((enabled) => !enabled)}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: useMaterialAsSource }}
+                    style={styles.aiSourceRow}
+                  >
+                    <Ionicons
+                      name={useMaterialAsSource ? "checkbox" : "square-outline"}
+                      size={19}
+                      color={useMaterialAsSource ? GREEN : colors.textMuted}
+                    />
+                    <View style={styles.aiSourceCopy}>
+                      <Text style={styles.aiSourceTitle}>Use this material as a source</Text>
+                      <Text style={styles.aiSourceDescription}>
+                        {useMaterialAsSource
+                          ? "Uses extracted file text and saved details when available."
+                          : "Drafts from the subject and topic only."}
+                      </Text>
+                    </View>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={handleAiDraft}
+                    disabled={drafting || saving}
+                    accessibilityRole="button"
+                    style={({ pressed }) => [
+                      styles.aiGenerateButton,
+                      pressed && styles.pressed,
+                      (drafting || saving) && styles.disabled,
+                    ]}
+                  >
+                    {drafting ? (
+                      <ProgressIndicator size="sm" color="#FFFFFF" accessibilityLabel="Generating AI draft" />
+                    ) : (
+                      <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
+                    )}
+                    <Text style={styles.aiGenerateButtonText}>
+                      {drafting ? "Generating with Groq…" : "Generate with Groq"}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
+              {editingId && groundingMissing ? (
                 <Text style={styles.hintText}>
                   Run supabase/ai_grounding.sql to enable lesson content and AI
                   grounding. Your existing materials keep working.
                 </Text>
-              ) : (
+              ) : editingId ? (
                 <>
                   <TextInput
                     value={form.content}
@@ -1533,7 +1771,7 @@ export default function TeacherMaterialsScreen() {
                     before publishing.
                   </Text>
                 </>
-              )}
+              ) : null}
             </ScrollView>
 
             <View style={styles.modalActions}>
@@ -1555,12 +1793,12 @@ export default function TeacherMaterialsScreen() {
                   />
                 ) : (
                   <Text style={styles.secondaryButtonText}>
-                    {editingId ? "Save Changes" : "Save as Draft"}
+                    {editingId ? "Save Changes" : "Upload & Continue"}
                   </Text>
                 )}
               </Pressable>
 
-              <Pressable
+              {editingId ? <Pressable
                 onPress={() => void handleSave("published")}
                 disabled={saving || drafting}
                 accessibilityRole="button"
@@ -1573,7 +1811,7 @@ export default function TeacherMaterialsScreen() {
                 <Text style={styles.primaryButtonText}>
                   {editingId ? "Save & Publish" : "Publish"}
                 </Text>
-              </Pressable>
+              </Pressable> : null}
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -1856,6 +2094,56 @@ const styles = StyleSheet.create({
     borderColor: "#CDE3D4",
   },
   aiDraftText: { fontSize: 11, fontWeight: "800", color: GREEN },
+  aiOptionsCard: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: "#DCE9DF",
+    backgroundColor: "#F8FBF8",
+    gap: spacing.sm,
+  },
+  aiOptionsHeading: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  aiOptionsIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  aiOptionsCopy: { flex: 1, gap: 2 },
+  aiOptionsTitle: { fontSize: 13, fontWeight: "800", color: colors.textPrimary },
+  aiOptionsDescription: { fontSize: 11, lineHeight: 15, color: colors.textMuted },
+  aiOptionLabel: { fontSize: 11, fontWeight: "800", color: colors.textMuted, marginTop: 3 },
+  aiChipRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  aiChip: {
+    minHeight: 32,
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  aiChipActive: { backgroundColor: colors.primarySoft, borderColor: GREEN },
+  aiChipText: { fontSize: 11, fontWeight: "700", color: colors.textMuted },
+  aiChipTextActive: { color: GREEN },
+  aiSourceRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, paddingVertical: 3 },
+  aiSourceCopy: { flex: 1, gap: 2 },
+  aiSourceTitle: { fontSize: 12, fontWeight: "700", color: colors.textPrimary },
+  aiSourceDescription: { fontSize: 11, lineHeight: 15, color: colors.textMuted },
+  aiGenerateButton: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    marginTop: 2,
+    borderRadius: radius.sm,
+    backgroundColor: GREEN,
+  },
+  aiGenerateButtonText: { fontSize: 13, fontWeight: "800", color: "#FFFFFF" },
   contentInput: { minHeight: 160 },
   hintText: {
     fontSize: 11,

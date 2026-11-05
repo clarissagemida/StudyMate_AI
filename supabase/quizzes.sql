@@ -13,7 +13,7 @@
 --   title        quiz title                (2-150 characters)
 --   subject      subject name              (1-80 characters)
 --   topic        sub-topic                 (optional, up to 120 characters)
---   difficulty   'easy' | 'medium' | 'hard'
+--   difficulty   'easy' | 'medium' | 'hard' | 'mixed'
 --   description  summary shown to students (optional, up to 2000 characters)
 --   status       'draft' (visible to its teacher only) or 'published'
 --                (visible to every approved student)
@@ -53,7 +53,7 @@ create table if not exists public.quizzes (
   topic       text not null default ''
               check (char_length(topic) <= 120),
   difficulty  text not null default 'medium'
-              check (difficulty in ('easy', 'medium', 'hard')),
+              check (difficulty in ('easy', 'medium', 'hard', 'mixed')),
   description text not null default ''
               check (char_length(description) <= 2000),
   status      text not null default 'draft'

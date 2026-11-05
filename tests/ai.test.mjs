@@ -22,9 +22,11 @@ import {
   parseGeminiPayload,
   uploadGeminiFile,
 } from "../supabase/functions/_shared/gemini.ts";
+import { callGroqCompletion } from "../supabase/functions/_shared/groq.ts";
 import {
   MAX_QUIZ_QUESTIONS,
   validateGeneratedQuestions,
+  validateGeneratedTeacherQuestions,
 } from "../supabase/functions/_shared/validation.ts";
 import { loadAiSettings } from "../supabase/functions/_shared/settings.ts";
 import {
@@ -163,6 +165,73 @@ test("validateGeneratedQuestions allows two-option questions", () => {
   });
 
   assert.equal(result.ok, true);
+});
+
+test("validateGeneratedTeacherQuestions accepts all supported teacher formats", () => {
+  const result = validateGeneratedTeacherQuestions({
+    questions: [
+      { questionType: "multiple_choice", prompt: "Pick one", options: ["A", "B"], correctIndex: 0, answerText: "", explanation: "" },
+      { questionType: "true_false", prompt: "True?", options: ["True", "False"], correctIndex: 1, answerText: "", explanation: "" },
+      { questionType: "enumeration", prompt: "List two", options: ["", ""], correctIndex: 0, answerText: "A, B", explanation: "" },
+      { questionType: "identification", prompt: "Name it", options: ["", ""], correctIndex: 0, answerText: "Answer", explanation: "" },
+    ],
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.questions.map((question) => question.questionType), [
+    "multiple_choice", "true_false", "enumeration", "identification",
+  ]);
+});
+
+test("callGroqCompletion sends chat requests and reads usage", async () => {
+  let request;
+  const result = await callGroqCompletion({
+    apiKey: "test-key",
+    model: "openai/gpt-oss-20b",
+    systemInstruction: "Teacher helper",
+    prompt: "Make a quiz",
+    json: true,
+    maxTokens: 1000,
+    fetchImpl: async (url, init) => {
+      request = { url, init };
+      return jsonResponse({
+        choices: [{ message: { content: '{"questions":[]}' } }],
+        usage: { prompt_tokens: 12, completion_tokens: 8 },
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.text, '{"questions":[]}');
+  assert.equal(result.promptTokens, 12);
+  assert.equal(request.url, "https://api.groq.com/openai/v1/chat/completions");
+  assert.equal(request.init.headers.Authorization, "Bearer test-key");
+  assert.deepEqual(JSON.parse(request.init.body).response_format, { type: "json_object" });
+});
+
+test("callGroqCompletion retries temporary failures and stops on bad credentials", async () => {
+  let attempts = 0;
+  const recovered = await callGroqCompletion({
+    apiKey: "test-key", model: "openai/gpt-oss-20b", systemInstruction: "",
+    prompt: "hello", maxTokens: 100, maxAttempts: 2, retryDelayMs: 0,
+    fetchImpl: async () => {
+      attempts += 1;
+      return attempts === 1
+        ? jsonResponse({ error: "temporary" }, 503)
+        : jsonResponse({ choices: [{ message: { content: "answer" } }] });
+    },
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(attempts, 2);
+
+  attempts = 0;
+  const rejected = await callGroqCompletion({
+    apiKey: "bad-key", model: "openai/gpt-oss-20b", systemInstruction: "",
+    prompt: "hello", maxTokens: 100, maxAttempts: 3,
+    fetchImpl: async () => { attempts += 1; return jsonResponse({ error: "unauthorized" }, 401); },
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.message, "The Groq API key is invalid or does not have access.");
+  assert.equal(attempts, 1);
 });
 
 // -------------------------------------------------------------- chunking
