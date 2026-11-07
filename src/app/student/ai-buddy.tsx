@@ -8,7 +8,8 @@ import {
 import { confirmAction, showNotice } from "@/utils/notify";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import type { Href } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FlatList,
@@ -48,6 +49,7 @@ const FOLLOW_UPS = [
 
 const MAX_SAVED_MESSAGES = 60;
 const STORAGE_PREFIX = "studymate.aiBuddy.v1.";
+const STUDENT_RETURN_PATHS = ["/student", "/student/study", "/student/quizzes", "/student/messages", "/student/quiz-attempt"] as const;
 
 function storageKey(userId: string): string {
   return `${STORAGE_PREFIX}${userId}`;
@@ -100,9 +102,11 @@ function parseStoredMessages(raw: string | null): ChatEntry[] {
 }
 
 export default function StudentAiBuddyScreen() {
-  const params = useLocalSearchParams<{ prompt?: string }>();
+  const params = useLocalSearchParams<{ prompt?: string; returnTo?: string }>();
+  const router = useRouter();
   const initialPrompt =
     typeof params.prompt === "string" ? params.prompt.trim() : "";
+  const safeReturnTo = STUDENT_RETURN_PATHS.includes(params.returnTo as (typeof STUDENT_RETURN_PATHS)[number]) ? params.returnTo : "/student";
 
   const [messages, setMessages] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState("");
@@ -303,6 +307,9 @@ export default function StudentAiBuddyScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
       <View style={styles.header}>
+        <Pressable onPress={() => router.replace(safeReturnTo as Href)} accessibilityRole="button" accessibilityLabel="Return to previous student screen" style={styles.headerAction}>
+          <Ionicons name="arrow-back" size={20} color={DARK_GREEN} />
+        </Pressable>
         <View style={styles.headerText}>
           <Text style={styles.headerTitle}>AI Buddy</Text>
           <Text style={styles.headerSubtitle}>Your study companion</Text>

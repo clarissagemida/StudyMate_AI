@@ -35,6 +35,9 @@ type Props = {
   onOpenFile?: () => void;
   onDownloadFile?: () => void;
   fileAction?: "open" | "download" | null;
+  completed?: boolean;
+  savingProgress?: boolean;
+  onMarkComplete?: () => void;
 };
 
 function paragraphsOf(content: string): string[] {
@@ -54,6 +57,9 @@ export function MaterialReader({
   onOpenFile,
   onDownloadFile,
   fileAction = null,
+  completed = false,
+  savingProgress = false,
+  onMarkComplete,
 }: Props) {
   const content = (material?.content ?? "").trim();
   const paragraphs = paragraphsOf(content);
@@ -224,6 +230,12 @@ export function MaterialReader({
             <Text style={styles.footer}>
               Provided by your teacher · StudyMate AI
             </Text>
+            {onMarkComplete ? (
+              <Pressable onPress={onMarkComplete} disabled={completed || savingProgress} accessibilityRole="button" style={({ pressed }) => [styles.completeButton, completed && styles.completeButtonDone, pressed && !completed && styles.pressed]}>
+                {savingProgress ? <ProgressIndicator size="sm" color={GREEN} accessibilityLabel="Saving lesson progress" /> : <Ionicons name={completed ? "checkmark-circle" : "checkmark-circle-outline"} size={19} color={completed ? GREEN : "#FFFFFF"} />}
+                <Text style={[styles.completeButtonText, completed && styles.completeButtonTextDone]}>{savingProgress ? "Saving progress..." : completed ? "Lesson completed" : "Mark lesson complete"}</Text>
+              </Pressable>
+            ) : null}
           </ScrollView>
         )}
       </SafeAreaView>
@@ -349,4 +361,8 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     marginTop: 20,
   },
+  completeButton: { minHeight: 48, borderRadius: 14, paddingHorizontal: 16, backgroundColor: GREEN, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 4 },
+  completeButtonDone: { backgroundColor: "#E8F3EB", borderWidth: 1, borderColor: "#CFE2D4" },
+  completeButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
+  completeButtonTextDone: { color: GREEN },
 });

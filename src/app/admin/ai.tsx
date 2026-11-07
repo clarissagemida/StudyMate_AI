@@ -12,6 +12,7 @@ import {
   Switch,
   Text,
   View,
+  useColorScheme,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -90,6 +91,7 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 export default function AdminAiScreen() {
+  const dark = useColorScheme() === "dark";
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -300,7 +302,7 @@ export default function AdminAiScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+    <SafeAreaView style={[styles.safeArea, dark && { backgroundColor: "#101A14" }]} edges={["bottom"]}>
       {refreshing ? (
         <ProgressIndicator
           style={styles.refreshProgress}

@@ -82,6 +82,8 @@ export default function StudentStudyScreen() {
   const [readerVisible, setReaderVisible] = useState(false);
   const [readerLoading, setReaderLoading] = useState(false);
   const [fileBusy, setFileBusy] = useState<FileAction | null>(null);
+  const [completedMaterials, setCompletedMaterials] = useState<Set<string>>(new Set());
+  const [savingProgress, setSavingProgress] = useState(false);
 
   const loadMaterials = useCallback(async (mode: LoadMode) => {
     if (mode === "refresh") setRefreshing(true);
@@ -96,6 +98,9 @@ export default function StudentStudyScreen() {
         router.replace("/login");
         return;
       }
+
+      const { data: progressRows } = await supabase.from("student_material_progress").select("material_id, status").eq("student_id", user.id).eq("status", "completed");
+      if (progressRows) setCompletedMaterials(new Set(progressRows.map((row) => row.material_id)));
 
       const baseColumns = "id, title, subject, topic, description, created_at";
       let data: unknown = null;
@@ -235,6 +240,15 @@ export default function StudentStudyScreen() {
           return;
         }
 
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { data: prior } = await supabase.from("student_material_progress").select("status, started_at, completed_at").eq("student_id", user.id).eq("material_id", item.id).maybeSingle();
+          if (prior?.status !== "completed") {
+            const { error: progressError } = await supabase.from("student_material_progress").upsert({ student_id: user.id, material_id: item.id, status: "in_progress", started_at: prior?.started_at ?? new Date().toISOString(), last_opened_at: new Date().toISOString(), completed_at: null }, { onConflict: "student_id,material_id" });
+            if (progressError && !isMissingRelation(progressError)) console.warn("Could not save lesson progress:", progressError.message);
+          }
+        }
+
         setReaderMaterial({
           id: String(row.id),
           title: String(row.title ?? ""),
@@ -307,6 +321,25 @@ export default function StudentStudyScreen() {
       setFileBusy(null);
     }
   }, [readerMaterial, fileBusy]);
+
+  const markLessonComplete = useCallback(async () => {
+    if (!readerMaterial?.id || savingProgress) return;
+    setSavingProgress(true);
+    try {
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) throw new Error("Please sign in again to save your lesson progress.");
+      const now = new Date().toISOString();
+      const { data: prior } = await supabase.from("student_material_progress").select("started_at").eq("student_id", user.id).eq("material_id", readerMaterial.id).maybeSingle();
+      const { error } = await supabase.from("student_material_progress").upsert({ student_id: user.id, material_id: readerMaterial.id, status: "completed", started_at: prior?.started_at ?? now, last_opened_at: now, completed_at: now }, { onConflict: "student_id,material_id" });
+      if (error) throw new Error(error.message);
+      setCompletedMaterials((current) => new Set(current).add(readerMaterial.id));
+      showNotice("Lesson complete", "Your study progress has been saved.");
+    } catch (error) {
+      showNotice("Unable to save progress", error instanceof Error ? error.message : "Please try again.");
+    } finally {
+      setSavingProgress(false);
+    }
+  }, [readerMaterial, savingProgress]);
 
   if (loading && items === null) {
     return <ScreenSkeleton />;
@@ -483,6 +516,9 @@ export default function StudentStudyScreen() {
           readerMaterial?.file_path ? handleDownloadFile : undefined
         }
         fileAction={fileBusy}
+        completed={readerMaterial ? completedMaterials.has(readerMaterial.id) : false}
+        savingProgress={savingProgress}
+        onMarkComplete={markLessonComplete}
       />
     </SafeAreaView>
   );
@@ -541,7 +577,7 @@ const styles = StyleSheet.create({
   },
   retryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
   pressed: { opacity: 0.8 },
-  header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 6 },
+  header: { paddingHorizontal: 20, paddingTop: 60, paddingBottom: 6 },
   headerTitle: { fontSize: 24, fontWeight: "800", color: DARK_GREEN },
   headerSubtitle: { fontSize: 12, color: "#718078", marginTop: 4 },
   listContent: { paddingHorizontal: 20, paddingBottom: 40, gap: 12 },

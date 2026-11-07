@@ -3,11 +3,12 @@ import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { useRequireRole } from "@/hooks/useRequireRole";
 import { supabase } from "@/lib/supabase";
 import { askTeacherAiBuddy } from "@/utils/askTeacherAiBuddy";
+import { AI_ENABLED } from "@/utils/aiFlags";
 import type { ChatMessage } from "@/utils/askStudyBuddy";
 import { confirmAction } from "@/utils/notify";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import type { Href } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -39,6 +40,8 @@ const TEACHER_RETURN_PATHS = [
   "/teacher/messages",
   "/teacher/students",
   "/teacher/profile",
+  "/teacher/announcements",
+  "/teacher/more",
 ] as const;
 
 type Entry = ChatMessage & { id: string };
@@ -67,9 +70,11 @@ function parseMessages(raw: string | null): Entry[] {
 export default function TeacherAiBuddyScreen() {
   const guard = useRequireRole("teacher");
   const { returnTo } = useLocalSearchParams<{ returnTo?: string }>();
+  const router = useRouter();
   const [messages, setMessages] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
   const [notice, setNotice] = useState("");
+  const [noticeKind, setNoticeKind] = useState<"unavailable" | "error" | null>(null);
   const [sending, setSending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const userId = useRef("");
@@ -125,6 +130,7 @@ export default function TeacherAiBuddyScreen() {
     commit([...messagesRef.current, userEntry]);
     setInput("");
     setNotice("");
+    setNoticeKind(null);
     sendingRef.current = true;
     setSending(true);
     scrollToEnd();
@@ -138,11 +144,13 @@ export default function TeacherAiBuddyScreen() {
         commit(messagesRef.current.filter((entry) => entry.id !== userEntry.id));
         setInput(question);
         setNotice(result.message);
+        setNoticeKind(result.status === "not_configured" ? "unavailable" : "error");
       }
     } catch (error) {
       commit(messagesRef.current.filter((entry) => entry.id !== userEntry.id));
       setInput(question);
       setNotice(error instanceof Error ? error.message : "Could not reach AI Buddy. Please try again.");
+      setNoticeKind("error");
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -157,6 +165,7 @@ export default function TeacherAiBuddyScreen() {
       if (sendingRef.current) return;
       commit([]);
       setNotice("");
+      setNoticeKind(null);
       if (userId.current) await AsyncStorage.removeItem(`${STORAGE_PREFIX}${userId.current}`);
     },
     { confirmLabel: "New chat", destructive: true },
@@ -191,6 +200,7 @@ export default function TeacherAiBuddyScreen() {
       </View>
 
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={8}>
+        {!AI_ENABLED ? <View style={styles.availabilityNotice}><Ionicons name="cloud-offline-outline" size={17} color="#8A6D1F" /><Text style={styles.availabilityText}>Teacher AI Buddy is turned off in this build. Enable EXPO_PUBLIC_AI_ENABLED and reload the app to use it.</Text></View> : null}
         <FlatList
           ref={listRef}
           data={messages}
@@ -206,7 +216,7 @@ export default function TeacherAiBuddyScreen() {
               <Text style={styles.introText}>Plan lessons, brainstorm activities, clarify concepts, and shape classroom materials. Review suggestions before sharing them with students.</Text>
               <View style={styles.suggestions}>
                 {SUGGESTIONS.map((suggestion) => (
-                  <Pressable key={suggestion} onPress={() => void send(suggestion)} accessibilityRole="button" style={styles.suggestion}>
+                  <Pressable key={suggestion} onPress={() => void send(suggestion)} disabled={!hydrated || sending} accessibilityRole="button" style={({ pressed }) => [styles.suggestion, pressed && styles.suggestionPressed, (!hydrated || sending) && styles.disabled]}>
                     <Ionicons name="chatbubble-ellipses-outline" size={15} color={GREEN} />
                     <Text style={styles.suggestionText}>{suggestion}</Text>
                   </Pressable>
@@ -251,7 +261,7 @@ export default function TeacherAiBuddyScreen() {
         />
         {sending ? <View style={styles.typing}><ProgressIndicator size="sm" color={GREEN} accessibilityLabel="AI Buddy is thinking" /><Text style={styles.typingText}>AI Buddy is thinking…</Text></View> : null}
         {!sending && lastMessage?.role === "assistant" ? <View style={styles.followUps}>{FOLLOW_UPS.map((text) => <Pressable key={text} onPress={() => void send(text)} style={styles.followUp}><Text style={styles.followUpText}>{text}</Text></Pressable>)}</View> : null}
-        {notice ? <View style={styles.notice}><Ionicons name="information-circle-outline" size={16} color="#8A6D1F" /><Text style={styles.noticeText}>{notice}</Text></View> : null}
+        {notice ? <View style={[styles.notice, noticeKind === "error" && styles.noticeError]}><Ionicons name={noticeKind === "unavailable" ? "cloud-offline-outline" : "alert-circle-outline"} size={17} color={noticeKind === "error" ? "#A34141" : "#8A6D1F"} /><View style={styles.noticeCopy}><Text style={[styles.noticeText, noticeKind === "error" && styles.noticeErrorText]}>{notice}</Text>{input.trim() ? <Pressable onPress={() => void send(input)} disabled={sending} accessibilityRole="button" accessibilityLabel="Retry the last AI request" style={({ pressed }) => [styles.retryButton, pressed && styles.retryPressed]}><Ionicons name="refresh" size={14} color={GREEN} /><Text style={styles.retryText}>Retry</Text></Pressable> : null}</View></View> : null}
         <View style={styles.composer}>
           <TextInput value={input} onChangeText={setInput} placeholder={hydrated ? "Ask for teaching support…" : "Restoring your conversation…"} placeholderTextColor="#89958D" style={styles.input} multiline maxLength={2000} editable={hydrated && !sending} accessibilityLabel="Message Teacher AI Buddy" />
           <Pressable onPress={() => void send(input)} disabled={!hydrated || !input.trim() || sending} accessibilityRole="button" accessibilityLabel="Send message" style={[styles.sendButton, (!hydrated || !input.trim() || sending) && styles.disabled]}>
@@ -273,7 +283,7 @@ const styles = StyleSheet.create({
   intro: { marginTop: 20, padding: 22, alignItems: "center", gap: 10, backgroundColor: "#FFFFFF", borderRadius: 20, borderWidth: 1, borderColor: "#E5EDE7" },
   introIcon: { width: 58, height: 58, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "#E8F3EB" },
   introTitle: { color: DARK_GREEN, fontSize: 16, fontWeight: "800", textAlign: "center" }, introText: { color: "#718078", fontSize: 12, lineHeight: 18, textAlign: "center" },
-  suggestions: { alignSelf: "stretch", gap: 8, marginTop: 5 }, suggestion: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: "#EEF7F0", borderRadius: 12 }, suggestionText: { flex: 1, color: "#2C4A38", fontSize: 12, fontWeight: "600" },
+  suggestions: { alignSelf: "stretch", gap: 8, marginTop: 5 }, suggestion: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: "#EEF7F0", borderRadius: 12 }, suggestionPressed: { backgroundColor: "#DCEFE0" }, suggestionText: { flex: 1, color: "#2C4A38", fontSize: 12, fontWeight: "600" },
   messageRow: { flexDirection: "row", alignItems: "flex-end", gap: 7 }, userRow: { justifyContent: "flex-end" }, buddyRow: { justifyContent: "flex-start" }, miniAvatar: { width: 25, height: 25, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: GREEN },
   bubble: { maxWidth: "84%", paddingHorizontal: 13, paddingVertical: 10, borderRadius: 16 }, userBubble: { backgroundColor: GREEN, borderBottomRightRadius: 4 }, buddyBubble: { backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E5EDE7", borderBottomLeftRadius: 4 },
   messageText: { fontSize: 13, lineHeight: 19 }, userText: { color: "#FFFFFF" }, buddyText: { color: "#203C2D" }, aiLabel: { marginTop: 7, color: "#839087", fontSize: 9 },
@@ -282,7 +292,7 @@ const styles = StyleSheet.create({
   useDraftText: { color: GREEN, fontSize: 10, fontWeight: "800" },
   typing: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 18, paddingBottom: 7 }, typingText: { fontSize: 11, color: "#65776B" },
   followUps: { flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 14, paddingBottom: 7 }, followUp: { borderWidth: 1, borderColor: "#DCEAE0", backgroundColor: "#EEF7F0", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 7 }, followUpText: { fontSize: 10, fontWeight: "600", color: "#2C4A38" },
-  notice: { flexDirection: "row", alignItems: "flex-start", gap: 7, marginHorizontal: 14, padding: 10, borderRadius: 11, backgroundColor: "#FBF3DA" }, noticeText: { flex: 1, color: "#8A6D1F", fontSize: 11, lineHeight: 16 },
+  notice: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginHorizontal: 14, padding: 11, borderRadius: 12, backgroundColor: "#FBF3DA" }, noticeError: { backgroundColor: "#FBEAEA" }, noticeCopy: { flex: 1, gap: 8 }, noticeText: { color: "#8A6D1F", fontSize: 11, lineHeight: 16 }, noticeErrorText: { color: "#A34141" }, retryButton: { minHeight: 32, alignSelf: "flex-start", paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 9, backgroundColor: "#FFFFFF" }, retryPressed: { opacity: 0.75 }, retryText: { color: GREEN, fontSize: 11, fontWeight: "800" }, availabilityNotice: { flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 12, backgroundColor: "#FBF3DA" }, availabilityText: { flex: 1, color: "#795D15", fontSize: 11, lineHeight: 16 },
   composer: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingHorizontal: 14, paddingTop: 9, paddingBottom: 10, backgroundColor: "#FFFFFF", borderTopWidth: 1, borderTopColor: "#E5EDE7" }, input: { flex: 1, minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: "#E1E8E2", borderRadius: 15, backgroundColor: "#F4F8F5", paddingHorizontal: 13, paddingVertical: 10, fontSize: 13, color: "#203C2D" }, sendButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 15, backgroundColor: GREEN }, disabled: { opacity: 0.45 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }, emptyTitle: { fontSize: 15, fontWeight: "700", color: DARK_GREEN },
 });

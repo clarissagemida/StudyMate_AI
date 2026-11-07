@@ -14,6 +14,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -109,6 +110,7 @@ function capitalize(value: string) {
 }
 
 export default function AdminUsersScreen() {
+  const dark = useColorScheme() === "dark";
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -855,7 +857,7 @@ export default function AdminUsersScreen() {
   if (loading && !refreshing) return <ScreenSkeleton />;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+    <SafeAreaView style={[styles.safeArea, dark && { backgroundColor: "#101A14" }]} edges={["top", "left", "right"]}>
       {refreshing ? (
         <ProgressIndicator
           style={styles.refreshProgress}

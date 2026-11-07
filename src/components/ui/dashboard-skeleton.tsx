@@ -1,8 +1,10 @@
 import { colors, radius, spacing } from "@/theme/tokens";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, useColorScheme, View } from "react-native";
 
 /** Placeholder shown while the signed-in user's dashboard access is checked. */
 export function DashboardSkeleton() {
+  const dark = useColorScheme() === "dark";
+  const styles = createStyles(dark);
   return (
     <View
       accessible
@@ -65,10 +67,11 @@ export function DashboardSkeleton() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(dark: boolean) {
+return StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: dark ? "#101A14" : colors.background,
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.xxl,
     gap: spacing.md,
@@ -88,7 +91,7 @@ const styles = StyleSheet.create({
     minHeight: 158,
     padding: spacing.xl,
     borderRadius: radius.xxl,
-    backgroundColor: "#DCE9DF",
+    backgroundColor: dark ? "#223328" : "#DCE9DF",
     justifyContent: "space-between",
     marginBottom: spacing.sm,
   },
@@ -100,13 +103,14 @@ const styles = StyleSheet.create({
   featureTrack: { height: 7, borderRadius: radius.pill, backgroundColor: "#C5D8CA", marginTop: spacing.lg },
   sectionTitle: { width: "58%", height: 15, borderRadius: radius.sm, backgroundColor: "#DDE8DF", marginTop: spacing.sm, marginBottom: spacing.xs },
   actions: { flexDirection: "row", justifyContent: "space-between", gap: spacing.md },
-  actionCard: { flex: 1, minHeight: 125, padding: spacing.md, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, justifyContent: "center", gap: 10 },
+  actionCard: { flex: 1, minHeight: 125, padding: spacing.md, borderRadius: radius.lg, backgroundColor: dark ? "#19251D" : colors.surface, borderWidth: 1, borderColor: dark ? "#2B3A30" : colors.border, justifyContent: "center", gap: 10 },
   actionIcon: { width: 38, height: 38, borderRadius: radius.md, backgroundColor: "#E5EEE7" },
   actionTitle: { width: "82%", height: 12, borderRadius: radius.pill, backgroundColor: "#DDE8DF" },
   actionSubtitle: { width: "96%", height: 9, borderRadius: radius.pill, backgroundColor: "#E8EEE9" },
-  activityCard: { minHeight: 70, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  activityCard: { minHeight: 70, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.lg, backgroundColor: dark ? "#19251D" : colors.surface, borderWidth: 1, borderColor: dark ? "#2B3A30" : colors.border },
   activityIcon: { width: 42, height: 42, borderRadius: radius.md, backgroundColor: "#E5EEE7" },
   activityText: { flex: 1, gap: 9 },
   activityTitle: { width: "64%", height: 11, borderRadius: radius.pill, backgroundColor: "#DDE8DF" },
   activitySubtitle: { width: "88%", height: 9, borderRadius: radius.pill, backgroundColor: "#E8EEE9" },
 });
+}

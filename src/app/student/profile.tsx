@@ -6,9 +6,10 @@ import { confirmAction, showNotice } from "@/utils/notify";
 import { uploadProfilePhoto } from "@/utils/uploadProfilePhoto";
 import { StatusPill } from "@/components/ui/chip";
 import { StateView } from "@/components/ui/state-view";
+import { ChangePasswordModal } from "@/components/change-password-modal";
 import { colors } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   Image,
@@ -21,8 +22,6 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { evaluatePasswordStrength, isPasswordStrongEnough } from "@/utils/passwordStrength";
-import { changePassword } from "@/utils/changePassword";
 
 const GREEN = colors.primary;
 const BG = colors.background;
@@ -38,6 +37,7 @@ type StudentProfile = {
 type WorkingState = "photo" | "signingOut" | "deleting" | null;
 
 export default function StudentProfileScreen() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -62,14 +62,6 @@ export default function StudentProfileScreen() {
 
   // Password change
   const [pwdModalVisible, setPwdModalVisible] = useState(false);
-  const [currentPwd, setCurrentPwd] = useState("");
-  const [newPwd, setNewPwd] = useState("");
-  const [confirmPwd, setConfirmPwd] = useState("");
-  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
-  const [showNewPwd, setShowNewPwd] = useState(false);
-  const [showConfirmPwd, setShowConfirmPwd] = useState(false);
-  const [pwdSaving, setPwdSaving] = useState(false);
-  const [pwdError, setPwdError] = useState<string | null>(null);
 
   const isWorking = working !== null;
 
@@ -142,7 +134,7 @@ export default function StudentProfileScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [router]);
 
   // Loader lives inside the effect so no state is applied synchronously
   // while the effect itself runs.
@@ -370,35 +362,6 @@ export default function StudentProfileScreen() {
     }
   };
 
-  const savePassword = async () => {
-    if (pwdSaving) return;
-    setPwdError(null);
-    if (!currentPwd) { setPwdError("Current password is required."); return; }
-    if (!newPwd) { setPwdError("New password is required."); return; }
-    if (!confirmPwd) { setPwdError("Confirm your new password."); return; }
-    if (newPwd !== confirmPwd) { setPwdError("Passwords do not match."); return; }
-    if (!isPasswordStrongEnough(newPwd)) {
-      setPwdError("Password is too weak. Use at least 8 characters with uppercase, lowercase, number, and symbol.");
-      return;
-    }
-    setPwdSaving(true);
-    try {
-      const res = await changePassword({ currentPassword: currentPwd, newPassword: newPwd, confirmPassword: confirmPwd });
-      if (!res.ok) throw new Error(res.message);
-      setPwdModalVisible(false);
-      setCurrentPwd("");
-      setNewPwd("");
-      setConfirmPwd("");
-      showNotice("Password Updated", res.message);
-    } catch (e: any) {
-      setPwdError(e.message || "Failed to change password");
-    } finally {
-      setPwdSaving(false);
-    }
-  };
-
-  const pwdStrength = evaluatePasswordStrength(newPwd);
-
   const handleOpenEdit = () => {
     setEditFullName(profile?.full_name ?? "");
     setEditStudentId(profile?.student_id ?? "");
@@ -406,13 +369,6 @@ export default function StudentProfileScreen() {
   };
 
   const handleOpenPasswordChange = () => {
-    setCurrentPwd("");
-    setNewPwd("");
-    setConfirmPwd("");
-    setShowCurrentPwd(false);
-    setShowNewPwd(false);
-    setShowConfirmPwd(false);
-    setPwdError(null);
     setPwdModalVisible(true);
   };
 
@@ -425,7 +381,12 @@ export default function StudentProfileScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.headerTitle}>Profile</Text>
+        <View style={styles.pageHeader}>
+          <Pressable onPress={() => router.replace("/student")} accessibilityRole="button" accessibilityLabel="Back to student dashboard" style={styles.backButton}>
+            <Ionicons name="arrow-back" size={20} color={GREEN} />
+          </Pressable>
+          <Text style={styles.headerTitle}>Profile & Settings</Text>
+        </View>
 
         {/* Identity card */}
         <View style={styles.card}>
@@ -683,66 +644,11 @@ export default function StudentProfileScreen() {
           </View>
         </Modal>
 
-        {/* Change Password Modal */}
-        <Modal visible={pwdModalVisible} transparent animationType="fade" onRequestClose={() => setPwdModalVisible(false)}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setPwdModalVisible(false)} />
-          <View style={additionalStyles.modalSheet}>
-            <View style={additionalStyles.modalHeaderRow}>
-              <Text style={additionalStyles.modalTitle}>Change Password</Text>
-              <Pressable onPress={() => setPwdModalVisible(false)}>
-                <Ionicons name="close" size={22} color="#123D2A" />
-              </Pressable>
-            </View>
-            <ScrollView contentContainerStyle={{ padding: 18, gap: 10 }}>
-              <Text style={additionalStyles.inputLabel}>Current Password</Text>
-              <View style={additionalStyles.passwordRow}>
-                <TextInput value={currentPwd} onChangeText={setCurrentPwd} secureTextEntry={!showCurrentPwd} style={additionalStyles.passwordInput} placeholder="Enter current password" placeholderTextColor="#9AA69E" />
-                <Pressable onPress={() => setShowCurrentPwd((v) => !v)} accessibilityRole="button" accessibilityLabel={showCurrentPwd ? "Hide password" : "Show password"} accessibilityState={{ selected: showCurrentPwd }}>
-                  <Ionicons name={showCurrentPwd ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7F72" />
-                </Pressable>
-              </View>
-
-              <Text style={additionalStyles.inputLabel}>New Password</Text>
-              <View style={additionalStyles.passwordRow}>
-                <TextInput value={newPwd} onChangeText={setNewPwd} secureTextEntry={!showNewPwd} style={additionalStyles.passwordInput} placeholder="Enter new password" placeholderTextColor="#9AA69E" />
-                <Pressable onPress={() => setShowNewPwd((v) => !v)} accessibilityRole="button" accessibilityLabel={showNewPwd ? "Hide password" : "Show password"} accessibilityState={{ selected: showNewPwd }}>
-                  <Ionicons name={showNewPwd ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7F72" />
-                </Pressable>
-              </View>
-
-              {newPwd.length > 0 ? (
-                <View style={additionalStyles.strengthBox}>
-                  <Text style={additionalStyles.strengthLabel}>Strength: {pwdStrength.label.toUpperCase()}</Text>
-                  <View style={additionalStyles.strengthBarRow}>
-                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 1 && additionalStyles.strengthBarActive]} />
-                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 2 && additionalStyles.strengthBarActive]} />
-                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 3 && additionalStyles.strengthBarActive]} />
-                    <View style={[additionalStyles.strengthBar, pwdStrength.score >= 4 && additionalStyles.strengthBarActive]} />
-                  </View>
-                  <Text style={additionalStyles.criteriaText}>Min 8 chars: {pwdStrength.criteria.minLength ? "✓" : "✗"}</Text>
-                  <Text style={additionalStyles.criteriaText}>Uppercase: {pwdStrength.criteria.hasUppercase ? "✓" : "✗"}</Text>
-                  <Text style={additionalStyles.criteriaText}>Lowercase: {pwdStrength.criteria.hasLowercase ? "✓" : "✗"}</Text>
-                  <Text style={additionalStyles.criteriaText}>Number: {pwdStrength.criteria.hasNumber ? "✓" : "✗"}</Text>
-                  <Text style={additionalStyles.criteriaText}>Special char: {pwdStrength.criteria.hasSpecial ? "✓" : "✗"}</Text>
-                </View>
-              ) : null}
-
-              <Text style={additionalStyles.inputLabel}>Confirm New Password</Text>
-              <View style={additionalStyles.passwordRow}>
-                <TextInput value={confirmPwd} onChangeText={setConfirmPwd} secureTextEntry={!showConfirmPwd} style={additionalStyles.passwordInput} placeholder="Confirm new password" placeholderTextColor="#9AA69E" />
-                <Pressable onPress={() => setShowConfirmPwd((v) => !v)} accessibilityRole="button" accessibilityLabel={showConfirmPwd ? "Hide password" : "Show password"} accessibilityState={{ selected: showConfirmPwd }}>
-                  <Ionicons name={showConfirmPwd ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7F72" />
-                </Pressable>
-              </View>
-
-              {pwdError ? <Text style={additionalStyles.errorText}>{pwdError}</Text> : null}
-
-              <Pressable onPress={savePassword} disabled={pwdSaving || !isPasswordStrongEnough(newPwd) || newPwd !== confirmPwd} style={[additionalStyles.primaryButton, (pwdSaving || !isPasswordStrongEnough(newPwd) || newPwd !== confirmPwd) && additionalStyles.buttonDisabled]}>
-                <Text style={additionalStyles.primaryButtonText}>{pwdSaving ? "Updating..." : "Update Password"}</Text>
-              </Pressable>
-            </ScrollView>
-          </View>
-        </Modal>
+        <ChangePasswordModal
+          visible={pwdModalVisible}
+          onClose={() => setPwdModalVisible(false)}
+          onSuccess={(message) => showNotice("Password updated successfully", `${message}\n\nUse this password every time you log in to your account.`)}
+        />
 
       {/* Re-authentication before the irreversible delete */}
       <Modal
@@ -854,11 +760,13 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.8 },
   disabled: { opacity: 0.6 },
   content: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40, gap: 4 },
+  pageHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
+  backButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: "#E8F3EB", alignItems: "center", justifyContent: "center" },
   headerTitle: {
     fontSize: 24,
     fontWeight: "800",
     color: "#123D2A",
-    marginBottom: 14,
+    marginBottom: 0,
   },
   card: {
     backgroundColor: "#FFFFFF",

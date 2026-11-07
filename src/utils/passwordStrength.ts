@@ -7,7 +7,7 @@ export type PasswordCriteria = {
 };
 
 export type PasswordStrength = {
-  score: number; // 0-4
+  score: number; // 0-5 checks passed
   label: "weak" | "good" | "strong";
   criteria: PasswordCriteria;
 };
@@ -28,22 +28,32 @@ export function evaluatePasswordStrength(password: string): PasswordStrength {
   if (criteria.hasNumber) score++;
   if (criteria.hasSpecial) score++;
 
-  if (score <= 2) {
+  const characterTypeCount = [
+    criteria.hasUppercase,
+    criteria.hasLowercase,
+    criteria.hasNumber,
+    criteria.hasSpecial,
+  ].filter(Boolean).length;
+
+  // The indicator should move through all three states as the teacher types:
+  // a few characters are weak, a longer draft is good, and the accepted
+  // minimum (8+ characters plus three character types) is strong.
+  if (password.length < 4) {
     return { score, label: "weak", criteria };
   }
-  if (score >= 4 && criteria.minLength && criteria.hasSpecial) {
+  if (criteria.minLength && characterTypeCount >= 3) {
     return { score, label: "strong", criteria };
   }
-  if (score === 3) {
-    return { score, label: "good", criteria };
-  }
-  return { score, label: "strong", criteria };
+  return { score, label: "good", criteria };
 }
 
 export function isPasswordStrongEnough(password: string): boolean {
   const strength = evaluatePasswordStrength(password);
-  if (strength.label === "weak") return false;
-  if (!strength.criteria.minLength) return false;
-  const met = Object.values(strength.criteria).filter(Boolean).length;
-  return met >= 3;
+  const characterTypes = [
+    strength.criteria.hasUppercase,
+    strength.criteria.hasLowercase,
+    strength.criteria.hasNumber,
+    strength.criteria.hasSpecial,
+  ].filter(Boolean).length;
+  return strength.criteria.minLength && characterTypes >= 3;
 }

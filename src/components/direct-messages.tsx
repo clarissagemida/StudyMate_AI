@@ -1,7 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { useRequireRole } from "@/hooks/useRequireRole";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
@@ -25,6 +25,7 @@ const PALE = "#F4F8F5";
 
 export function DirectMessages({ role }: { role: Role }) {
   const guard = useRequireRole(role);
+  const router = useRouter();
   const params = useLocalSearchParams<{ contactId?: string }>();
   const requestedContactId = typeof params.contactId === "string" ? params.contactId : "";
   const [userId, setUserId] = useState("");
@@ -128,8 +129,13 @@ export function DirectMessages({ role }: { role: Role }) {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      <View style={styles.header}>
-        {activeContact ? <Pressable onPress={() => { setActiveContact(null); setMessages([]); }} accessibilityRole="button" accessibilityLabel="Back to contacts"><Ionicons name="arrow-back" size={22} color={GREEN} /></Pressable> : null}
+      <View style={[styles.header, role === "student" && { marginTop: 48 }]}>
+        <Pressable onPress={() => {
+          if (activeContact) { setActiveContact(null); setMessages([]); }
+          else router.replace(role === "teacher" ? "/teacher" : "/student");
+        }} accessibilityRole="button" accessibilityLabel={activeContact ? "Back to contacts" : "Back to dashboard"} style={styles.headerBack}>
+          <Ionicons name="arrow-back" size={21} color={GREEN} />
+        </Pressable>
         <View style={styles.headerText}>
           <Text style={styles.title}>{activeContact?.full_name ?? title}</Text>
           <Text style={styles.subtitle}>{activeContact ? "Private conversation" : "Students and teachers connected through quiz activity"}</Text>
@@ -171,7 +177,8 @@ export function DirectMessages({ role }: { role: Role }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: PALE }, flex: { flex: 1 }, center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 28, gap: 10 },
-  header: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 18, borderBottomWidth: 1, borderBottomColor: "#E2EAE4", backgroundColor: "#FFFFFF" },
+  header: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: "#E2EAE4", backgroundColor: "#FFFFFF" },
+  headerBack: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#EAF4EC" },
   headerText: { flex: 1 }, title: { color: "#123D2A", fontSize: 18, fontWeight: "800" }, subtitle: { color: "#728078", fontSize: 11, marginTop: 3 },
   contacts: { padding: 16, gap: 10 }, contact: { minHeight: 64, borderRadius: 16, padding: 12, flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E2EAE4" }, avatar: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "#E8F3EB" }, avatarText: { fontSize: 15, color: GREEN, fontWeight: "800" }, contactName: { flex: 1, color: "#20392B", fontSize: 14, fontWeight: "700" },
   messageList: { flexGrow: 1, justifyContent: "flex-end", padding: 16, gap: 10 }, bubble: { maxWidth: "84%", borderRadius: 16, paddingHorizontal: 13, paddingVertical: 9 }, mine: { alignSelf: "flex-end", backgroundColor: GREEN, borderBottomRightRadius: 4 }, theirs: { alignSelf: "flex-start", backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E2EAE4", borderBottomLeftRadius: 4 }, body: { color: "#20392B", fontSize: 14, lineHeight: 20 }, mineText: { color: "#FFFFFF" }, time: { color: "#7D8981", fontSize: 9, marginTop: 4, alignSelf: "flex-end" }, mineTime: { color: "#D5E9DC" },

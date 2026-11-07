@@ -4,9 +4,8 @@ import { Card } from "@/components/ui/card";
 import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { SectionHeader } from "@/components/ui/section-header";
 import { colors, radius, spacing } from "@/theme/tokens";
-import { AI_ENABLED } from "@/utils/aiFlags";
 import { Ionicons } from "@expo/vector-icons";
-import { router, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
 import {
   ScrollView,
@@ -30,6 +29,9 @@ type AttemptSummary = {
   total: number;
   created_at: string;
 };
+type PublishedQuiz = { id: string; title: string; subject: string };
+type StudyProgress = { material_id: string; status: "in_progress" | "completed" };
+type StudyMaterial = { id: string; title: string; subject: string };
 
 function isMissingRelation(error: {
   code?: string;
@@ -58,10 +60,14 @@ function formatDate(value: string) {
 }
 
 export default function StudentHomeScreen() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [fullName, setFullName] = useState("");
   const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
   const [quizTitles, setQuizTitles] = useState<Record<string, string>>({});
+  const [availableQuizzes, setAvailableQuizzes] = useState<PublishedQuiz[]>([]);
+  const [studyProgress, setStudyProgress] = useState<StudyProgress[]>([]);
+  const [studyMaterials, setStudyMaterials] = useState<Record<string, StudyMaterial>>({});
 
   const openScreen = (path: string) => {
     router.push(path as never);
@@ -96,36 +102,64 @@ export default function StudentHomeScreen() {
             .order("created_at", { ascending: false })
             .limit(10);
 
+          const { data: published, error: publishedError } = await supabase
+            .from("quizzes")
+            .select("id, title, subject")
+            .eq("status", "published")
+            .order("created_at", { ascending: false })
+            .limit(5);
+
+          if (active && !publishedError) setAvailableQuizzes((published ?? []) as PublishedQuiz[]);
+
           if (!active) return;
 
           if (error) {
             if (!isMissingRelation(error)) {
               console.warn("Could not load quiz history:", error.message);
             }
-            return;
+            setAttempts([]);
+          } else {
+            const rows = (data ?? []) as AttemptSummary[];
+            setAttempts(rows);
           }
-
-          const rows = (data ?? []) as AttemptSummary[];
-          setAttempts(rows);
 
           const quizIds = Array.from(
-            new Set(rows.map((attempt) => attempt.quiz_id)),
+            new Set((data ?? []).map((attempt) => (attempt as AttemptSummary).quiz_id)),
           );
 
-          if (quizIds.length === 0) return;
-
-          const { data: quizRows, error: quizError } = await supabase
-            .from("quizzes")
-            .select("id, title")
-            .in("id", quizIds);
-
-          if (!active || quizError) return;
-
-          const titles: Record<string, string> = {};
-          for (const row of quizRows ?? []) {
-            titles[row.id] = row.title;
+          if (quizIds.length > 0) {
+            const { data: quizRows, error: quizError } = await supabase
+              .from("quizzes")
+              .select("id, title")
+              .in("id", quizIds);
+            if (!active) return;
+            if (quizError) console.warn("Could not load quiz titles:", quizError.message);
+            else {
+              const titles: Record<string, string> = {};
+              for (const row of quizRows ?? []) titles[row.id] = row.title;
+              setQuizTitles(titles);
+            }
           }
-          setQuizTitles(titles);
+
+          const { data: progressRows, error: progressError } = await supabase
+            .from("student_material_progress")
+            .select("material_id, status")
+            .eq("student_id", user.id)
+            .order("last_opened_at", { ascending: false })
+            .limit(5);
+          if (active && !progressError) {
+            const progress = (progressRows ?? []) as StudyProgress[];
+            setStudyProgress(progress);
+            const materialIds = progress.map((row) => row.material_id);
+            if (materialIds.length) {
+              const { data: materialRows } = await supabase.from("materials").select("id, title, subject").in("id", materialIds).eq("status", "published");
+              if (active) {
+                const mapped: Record<string, StudyMaterial> = {};
+                for (const row of materialRows ?? []) mapped[row.id] = row as StudyMaterial;
+                setStudyMaterials(mapped);
+              }
+            }
+          }
         } catch (error) {
           console.warn("Could not load student overview:", error);
         } finally {
@@ -188,13 +222,7 @@ export default function StudentHomeScreen() {
             </Text>
           </View>
 
-          <TouchableOpacity
-            style={styles.profileButton}
-            onPress={() => openScreen("/student/profile")}
-            accessibilityLabel="Open profile"
-          >
-            <Ionicons name="person-outline" size={24} color={GREEN} />
-          </TouchableOpacity>
+          <View style={styles.headerSpacer} />
         </View>
 
         {/* Progress */}
@@ -234,6 +262,30 @@ export default function StudentHomeScreen() {
         </View>
 
         {/* Quick Actions */}
+        <SectionHeader
+          title="Ready when you are"
+          actionLabel="All quizzes"
+          onAction={() => openScreen("/student/quizzes")}
+        />
+        {availableQuizzes.length ? availableQuizzes.map((quiz) => {
+          const quizAttempt = attempts.find((attempt) => attempt.quiz_id === quiz.id);
+          const score = quizAttempt && quizAttempt.total > 0 ? Math.round(quizAttempt.score / quizAttempt.total * 100) : null;
+          return <TouchableOpacity key={quiz.id} onPress={() => router.push({ pathname: "/student/quiz-attempt", params: { quizId: quiz.id } })} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel={`${quizAttempt ? "Review" : "Take"} ${quiz.title}`}>
+            <Card style={styles.availableQuiz}>
+              <View style={[styles.availableIcon, quizAttempt && styles.studyIcon]}><Ionicons name={quizAttempt ? "checkmark-circle-outline" : "clipboard-outline"} size={19} color={quizAttempt ? GREEN : GREEN} /></View>
+              <View style={styles.activityText}><Text style={styles.activityTitle} numberOfLines={1}>{quiz.title}</Text><Text style={styles.activityDescription} numberOfLines={1}>{quiz.subject} · {quizAttempt ? `Attempted${score === null ? "" : ` · ${score}%`}` : "Upcoming"}</Text></View>
+              <Ionicons name="arrow-forward" size={18} color={GREEN} />
+            </Card>
+          </TouchableOpacity>;
+        }) : <TouchableOpacity onPress={() => openScreen("/student/quizzes")} activeOpacity={0.85}><Card style={styles.availableQuiz}><View style={styles.availableIcon}><Ionicons name="search-outline" size={19} color={GREEN} /></View><View style={styles.activityText}><Text style={styles.activityTitle}>Browse quizzes</Text><Text style={styles.activityDescription}>See all quizzes published by teachers</Text></View><Ionicons name="arrow-forward" size={18} color={GREEN} /></Card></TouchableOpacity>}
+
+        <SectionHeader title="Your learning plan" actionLabel="Study" onAction={() => openScreen("/student/study")} />
+        {studyProgress.filter((row) => row.status === "in_progress" && studyMaterials[row.material_id]).length ? studyProgress.filter((row) => row.status === "in_progress" && studyMaterials[row.material_id]).map((row) => {
+          const material = studyMaterials[row.material_id];
+          return <TouchableOpacity key={row.material_id} onPress={() => openScreen("/student/study")} activeOpacity={0.85}><Card style={styles.availableQuiz}><View style={[styles.availableIcon, styles.studyIcon]}><Ionicons name="book-outline" size={19} color="#267B83" /></View><View style={styles.activityText}><Text style={styles.activityTitle} numberOfLines={1}>{material.title}</Text><Text style={styles.activityDescription} numberOfLines={1}>{material.subject} · In progress</Text></View><Ionicons name="arrow-forward" size={18} color={GREEN} /></Card></TouchableOpacity>;
+        }) : <Card style={styles.learningEmpty}><Ionicons name="checkmark-circle-outline" size={20} color={GREEN} /><Text style={styles.learningEmptyText}>Your lesson progress will appear here as you study.</Text></Card>}
+
+        {/* Quick Actions */}
         <SectionHeader title="What would you like to do?" />
 
         <View style={styles.actionGrid}>
@@ -245,19 +297,6 @@ export default function StudentHomeScreen() {
               onPress={() => openScreen("/student/study")}
             />
           </View>
-
-          {AI_ENABLED ? (
-            <View style={styles.gridCell}>
-              <ActionCard
-                icon="chatbubbles-outline"
-                iconColor="#6953B8"
-                iconBg="#E9E6FA"
-                title="AI Buddy"
-                description="Ask study questions"
-                onPress={() => openScreen("/student/ai-buddy")}
-              />
-            </View>
-          ) : null}
 
           <View style={styles.gridCell}>
             <ActionCard
@@ -365,7 +404,7 @@ const styles = StyleSheet.create({
   },
   container: {
     paddingHorizontal: spacing.xl,
-    paddingTop: spacing.md,
+    paddingTop: 60,
     paddingBottom: spacing.xxxl,
   },
   header: {
@@ -403,6 +442,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginLeft: spacing.md,
   },
+  headerSpacer: { width: 12 },
   goalCard: {
     backgroundColor: GREEN,
     borderRadius: radius.xxl,
@@ -467,6 +507,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: spacing.xxl,
   },
+  availableQuiz: { flexDirection: "row", alignItems: "center", marginBottom: spacing.sm, paddingVertical: spacing.md },
+  availableIcon: { width: 42, height: 42, borderRadius: radius.md, backgroundColor: colors.primarySoftAlt, alignItems: "center", justifyContent: "center", marginRight: spacing.md },
+  studyIcon: { backgroundColor: "#DFF1F3" },
+  learningEmpty: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: spacing.xxl },
+  learningEmptyText: { flex: 1, color: MUTED, fontSize: 12, lineHeight: 18 },
   gridCell: {
     width: "48%",
     marginBottom: spacing.md,

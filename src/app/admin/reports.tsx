@@ -7,6 +7,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -18,6 +19,7 @@ const BG = "#F4F8F5";
 type Stat = { label: string; value: number; icon: keyof typeof Ionicons.glyphMap };
 
 export default function AdminReportsScreen() {
+  const dark = useColorScheme() === "dark";
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<Stat[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -97,7 +99,7 @@ export default function AdminReportsScreen() {
   if (loading) return <ScreenSkeleton />;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+    <SafeAreaView style={[styles.safeArea, dark && { backgroundColor: "#101A14" }]} edges={["bottom"]}>
       <ScrollView
         contentContainerStyle={styles.container}
         showsVerticalScrollIndicator={false}

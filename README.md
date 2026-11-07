@@ -40,6 +40,7 @@ Supabase (Postgres + Auth + Edge Functions).
    ```
    handle_new_user.sql
    profiles_security.sql
+   admin_activity_notifications.sql
    materials.sql
    ai_grounding.sql
    quizzes.sql
@@ -47,6 +48,8 @@ Supabase (Postgres + Auth + Edge Functions).
    ai_settings.sql
    ai_usage.sql
    teacher_features.sql
+   announcements.sql
+   student_activity.sql
    quiz_question_types.sql
    teacher_student_messages.sql
    ai_reports.sql
@@ -64,7 +67,7 @@ Supabase (Postgres + Auth + Edge Functions).
 
    ```bash
    npx supabase functions deploy study-buddy materials-index materials-extract teacher-ai-generator teacher-ai-buddy
-   npx supabase functions deploy send-verification-code verify-registration-code delete-account
+   npx supabase functions deploy send-verification-code verify-registration-code delete-account change-password
    ```
 
    `teacher_features.sql` creates the private `materials` Storage bucket.

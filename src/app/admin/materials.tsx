@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -73,6 +74,7 @@ function formatDate(value: string) {
 }
 
 export default function AdminMaterialsScreen() {
+  const dark = useColorScheme() === "dark";
   const [items, setItems] = useState<MaterialRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -254,7 +256,7 @@ export default function AdminMaterialsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+    <SafeAreaView style={[styles.safeArea, dark && { backgroundColor: "#101A14" }]} edges={["bottom"]}>
       {refreshing ? (
         <ProgressIndicator
           style={styles.refreshProgress}

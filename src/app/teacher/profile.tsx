@@ -1,4 +1,5 @@
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
+import { ChangePasswordModal } from "@/components/change-password-modal";
 import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { deleteAccount } from "@/utils/deleteAccount";
@@ -75,6 +76,7 @@ export default function TeacherProfileScreen() {
   const [savingTeaching, setSavingTeaching] = useState(false);
 
   const [working, setWorking] = useState<WorkingState>(null);
+  const [passwordModalVisible, setPasswordModalVisible] = useState(false);
 
   // Re-authentication modal for account deletion.
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -448,7 +450,12 @@ export default function TeacherProfileScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.headerTitle}>Profile</Text>
+        <View style={styles.pageHeader}>
+          <Pressable onPress={() => router.replace("/teacher")} accessibilityRole="button" accessibilityLabel="Back to dashboard" style={styles.backButton}>
+            <Ionicons name="arrow-back" size={20} color={GREEN} />
+          </Pressable>
+          <Text style={styles.headerTitle}>Settings & Profile</Text>
+        </View>
 
         {/* Identity card */}
         <View style={styles.card}>
@@ -655,6 +662,20 @@ export default function TeacherProfileScreen() {
         <Text style={styles.sectionTitle}>Security</Text>
 
         <Pressable
+          onPress={() => setPasswordModalVisible(true)}
+          disabled={isWorking}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.actionButton, pressed && styles.pressed, isWorking && styles.disabled]}
+        >
+          <Ionicons name="key-outline" size={20} color={GREEN} />
+          <View style={styles.actionText}>
+            <Text style={styles.actionTitle}>Change Password</Text>
+            <Text style={styles.actionSubtitle}>Update your sign-in password securely.</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={17} color="#9AA69D" />
+        </Pressable>
+
+        <Pressable
           onPress={handleLockApp}
           disabled={isWorking}
           accessibilityRole="button"
@@ -729,6 +750,12 @@ export default function TeacherProfileScreen() {
           </View>
         </Pressable>
       </ScrollView>
+
+      <ChangePasswordModal
+        visible={passwordModalVisible}
+        onClose={() => setPasswordModalVisible(false)}
+        onSuccess={(message) => showNotice("Password updated successfully", `${message}\n\nUse this password every time you log in to your account.`)}
+      />
 
       {/* Re-authentication before the irreversible delete */}
       <Modal
@@ -846,6 +873,8 @@ const styles = StyleSheet.create({
     color: "#123D2A",
     marginBottom: 14,
   },
+  pageHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 14 },
+  backButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: "#E8F3EB", alignItems: "center", justifyContent: "center" },
   card: {
     backgroundColor: "#FFFFFF",
     borderRadius: 20,

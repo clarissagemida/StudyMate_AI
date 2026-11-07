@@ -485,7 +485,7 @@ export default function QuizAttemptScreen() {
                 onPress={() => {
                   router.push({
                     pathname: "/student/ai-buddy",
-                    params: { prompt: mistakePrompt },
+                    params: { prompt: mistakePrompt, returnTo: "/student/quiz-attempt" },
                   });
                 }}
                 accessibilityRole="button"

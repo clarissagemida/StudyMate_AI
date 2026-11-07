@@ -12,6 +12,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -61,6 +62,7 @@ type DashboardError = {
 };
 
 export default function AdminHomeScreen() {
+  const dark = useColorScheme() === "dark";
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [adminName, setAdminName] = useState("Administrator");
@@ -220,8 +222,8 @@ export default function AdminHomeScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" />
+    <SafeAreaView style={[styles.container, dark && { backgroundColor: "#101A14" }]}>
+      <StatusBar barStyle={dark ? "light-content" : "dark-content"} />
 
       {refreshing ? (
         <ProgressIndicator

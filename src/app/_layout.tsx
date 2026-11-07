@@ -1,5 +1,7 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import { useColorScheme } from "react-native";
+import { useEffect } from "react";
+import { loadAdminTheme, saveAdminTheme } from "@/utils/adminTheme";
 
 import { AnimatedSplashOverlay } from "@/components/animated-icon";
 import { SweetAlertHost } from "@/components/ui/sweet-alert-host";
@@ -8,6 +10,14 @@ import { SweetAlertHost } from "@/components/ui/sweet-alert-host";
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+
+  useEffect(() => {
+    let active = true;
+    void loadAdminTheme().then((preference) => {
+      if (active) void saveAdminTheme(preference);
+    });
+    return () => { active = false; };
+  }, []);
 
   return (
     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>

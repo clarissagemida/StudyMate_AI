@@ -29,7 +29,7 @@ Deno.serve(async (req: Request) => {
   if (!token) return json({ error: 'Please sign in.' }, 401);
 
   const caller = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: Bearer  } },
+    global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
@@ -65,8 +65,43 @@ Deno.serve(async (req: Request) => {
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const { error: updErr } = await admin.auth.admin.updateUserById(user.id, { password: newPassword });
-  if (updErr) return json({ error: 'Failed to update password.' }, 500);
+
+  const { data: profile, error: profileError } = await admin
+    .from('profiles')
+    .select('full_name, role, approval_status')
+    .eq('id', user.id)
+    .maybeSingle();
+  if (profileError || !profile || !['teacher', 'student'].includes(profile.role) || profile.approval_status !== 'approved') {
+    return json({ error: 'Only approved teacher and student accounts can change passwords here.' }, 403);
+  }
+
+  // Update through the authenticated user's client so the active session can
+  // continue on its dashboard. Admin password updates can revoke that session
+  // and send the user back through login immediately after a successful change.
+  const { error: updErr } = await caller.auth.updateUser({ password: newPassword });
+  if (updErr) {
+    const incorrectCurrentPassword = /current password|invalid.*credential|password.*incorrect/i.test(updErr.message);
+    return json(
+      { error: incorrectCurrentPassword ? 'Current password is incorrect.' : 'Failed to update password.' },
+      incorrectCurrentPassword ? 401 : 500,
+    );
+  }
+
+  const actorName = String(profile.full_name ?? '').trim() || (profile.role === 'teacher' ? 'Teacher' : 'Student');
+  const { error: notificationError } = await admin.from('admin_activity_notifications').insert({
+    actor_id: user.id,
+    actor_name: actorName,
+    actor_role: profile.role,
+    event_type: 'password_changed',
+    title: `${profile.role === 'teacher' ? 'Teacher' : 'Student'} password changed`,
+    details: `${actorName} changed the password for their account.`,
+  });
+  if (notificationError) {
+    // Password change has already succeeded; report the notification setup
+    // issue separately without exposing credentials or undoing the update.
+    console.error('Password changed but admin activity notification failed:', notificationError.code);
+    return json({ status: 'ok', message: 'Password updated, but administrator notification could not be recorded. Ask an administrator to apply the activity notifications SQL setup.' });
+  }
 
   return json({ status: 'ok', message: 'Password updated successfully.' });
 });

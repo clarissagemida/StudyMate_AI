@@ -7,7 +7,7 @@ import { ScreenTitle } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
@@ -82,6 +82,7 @@ function scorePercent(score: number, total: number) {
 }
 
 export default function StudentQuizzesScreen() {
+  const router = useRouter();
   const [items, setItems] = useState<QuizRow[] | null>(null);
   const [questionCounts, setQuestionCounts] = useState<Record<string, number>>(
     {},
@@ -235,7 +236,7 @@ export default function StudentQuizzesScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     const run = async () => {
@@ -269,8 +270,21 @@ export default function StudentQuizzesScreen() {
         ...attempt,
         title: titleById.get(attempt.quiz_id) ?? "Removed quiz",
       }))
-      .slice(0, 5);
+      .slice(0, 3);
   }, [attempts, items]);
+
+  const progressSummary = useMemo(() => {
+    const completed = new Set(attempts.map((attempt) => attempt.quiz_id)).size;
+    const average = attempts.length
+      ? Math.round(
+          attempts.reduce(
+            (sum, attempt) => sum + scorePercent(attempt.score, attempt.total),
+            0,
+          ) / attempts.length,
+        )
+      : null;
+    return { completed, average };
+  }, [attempts]);
 
   const handleRetry = () => {
     setLoading(true);
@@ -310,7 +324,7 @@ export default function StudentQuizzesScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <ScreenTitle title="Quizzes" subtitle="Test what you have learned" />
+      <View style={{ marginTop: 48 }}><ScreenTitle title="Quizzes" subtitle="Test what you have learned" /></View>
 
       {refreshing ? (
         <ProgressIndicator
@@ -337,29 +351,6 @@ export default function StudentQuizzesScreen() {
         }
         ListHeaderComponent={
           <View style={styles.listHeader}>
-            {recentAttempts.length > 0 ? (
-              <Card style={styles.resultsCard}>
-                <Text style={styles.resultsTitle}>Recent Results</Text>
-
-                {recentAttempts.map((attempt) => (
-                  <View key={attempt.id} style={styles.resultRow}>
-                    <View style={styles.resultText}>
-                      <Text style={styles.resultTitle} numberOfLines={1}>
-                        {attempt.title}
-                      </Text>
-                      <Text style={styles.resultDate}>
-                        {formatDate(attempt.created_at)}
-                      </Text>
-                    </View>
-
-                    <Text style={styles.resultScore}>
-                      {attempt.score}/{attempt.total}
-                    </Text>
-                  </View>
-                ))}
-              </Card>
-            ) : null}
-
             <View style={styles.searchBox}>
               <Ionicons name="search-outline" size={19} color="#718078" />
               <TextInput
@@ -384,27 +375,30 @@ export default function StudentQuizzesScreen() {
               )}
             </View>
 
-            <Pressable
-              onPress={() => {
-                router.push("/student/ai-buddy" as never);
-              }}
-              accessibilityRole="button"
-              style={styles.practiceCta}
-            >
-              <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
-              <Text style={styles.practiceCtaText}>
-                Generate Practice Quiz with AI Buddy
-              </Text>
-            </Pressable>
+            <View style={styles.progressSection}>
+              <View style={styles.progressHeading}>
+                <View><Text style={styles.progressTitle}>Your progress</Text><Text style={styles.progressSubtitle}>A quick look at your quiz work</Text></View>
+              </View>
+              <View style={styles.summaryRow}>
+                <View style={styles.summaryTile}><View style={styles.summaryIcon}><Ionicons name="checkmark-done-outline" size={17} color={GREEN} /></View><View style={styles.summaryCopy}><Text style={styles.summaryValue}>{progressSummary.completed}</Text><Text style={styles.summaryLabel}>Quizzes completed</Text></View></View>
+                <View style={styles.summaryTile}><View style={styles.summaryIcon}><Ionicons name="stats-chart-outline" size={17} color={GREEN} /></View><View style={styles.summaryCopy}><Text style={styles.summaryValue}>{progressSummary.average === null ? "—" : `${progressSummary.average}%`}</Text><Text style={styles.summaryLabel}>Average score</Text></View></View>
+              </View>
+            </View>
 
             <Pressable
-              onPress={() => router.push("/student/practice-history" as never)}
+              onPress={() => router.push({ pathname: "/student/ai-buddy", params: { returnTo: "/student/quizzes" } })}
               accessibilityRole="button"
-              style={styles.practiceHistoryLink}
+              style={({ pressed }) => [styles.aiPracticeCard, pressed && styles.pressed]}
             >
-              <Ionicons name="time-outline" size={16} color={GREEN} />
-              <Text style={styles.practiceHistoryText}>View Practice History</Text>
+              <View style={styles.aiPracticeIcon}><Ionicons name="sparkles-outline" size={18} color={GREEN} /></View>
+              <View style={styles.aiPracticeCopy}><Text style={styles.aiPracticeTitle}>Practice with AI Buddy</Text><Text style={styles.aiPracticeSubtitle}>Get a practice session tailored to you</Text></View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textFaint} />
             </Pressable>
+            <Pressable onPress={() => router.push("/student/practice-history" as never)} accessibilityRole="button" style={styles.practiceHistoryLink}>
+              <Ionicons name="time-outline" size={14} color={GREEN} /><Text style={styles.practiceHistoryText}>View AI practice history</Text>
+            </Pressable>
+
+            <View style={styles.quizSectionHeading}><View><Text style={styles.quizSectionTitle}>Published quizzes</Text><Text style={styles.quizSectionSubtitle}>Assessments shared by your teachers</Text></View><View style={styles.quizCount}><Text style={styles.quizCountText}>{visibleItems.length}</Text></View></View>
           </View>
         }
         ListEmptyComponent={
@@ -428,8 +422,13 @@ export default function StudentQuizzesScreen() {
                   ? "Try a different search term."
                   : "Check back soon — your teachers are preparing quizzes."}
             </Text>
+            {!search.trim() && !tableMissing ? <Pressable onPress={() => router.push({ pathname: "/student/ai-buddy", params: { returnTo: "/student/quizzes" } })} accessibilityRole="button" style={styles.emptyPracticeLink}><Ionicons name="sparkles-outline" size={15} color={GREEN} /><Text style={styles.emptyPracticeText}>Practice with AI Buddy</Text><Ionicons name="arrow-forward" size={14} color={GREEN} /></Pressable> : null}
           </Card>
         }
+        ListFooterComponent={recentAttempts.length > 0 ? <Card style={styles.resultsCard}>
+          <View style={styles.resultsHeader}><Text style={styles.resultsTitle}>Recent quiz attempts</Text></View>
+          {recentAttempts.map((attempt) => <View key={attempt.id} style={styles.resultRow}><View style={styles.resultText}><Text style={styles.resultTitle} numberOfLines={1}>{attempt.title}</Text><Text style={styles.resultDate}>{formatDate(attempt.created_at)}</Text></View><Text style={styles.resultScore}>{scorePercent(attempt.score, attempt.total)}%</Text></View>)}
+        </Card> : null}
         renderItem={({ item }) => {
           const count = questionCounts[item.id] ?? 0;
           const best = bestScores[item.id];
@@ -437,9 +436,11 @@ export default function StudentQuizzesScreen() {
           return (
             <Pressable
               onPress={() => openQuiz(item)}
+              disabled={count === 0}
+              accessibilityState={{ disabled: count === 0 }}
               accessibilityRole="button"
               accessibilityLabel={`Start quiz ${item.title}`}
-              style={({ pressed }) => pressed && styles.pressed}
+              style={({ pressed }) => [pressed && styles.pressed, count === 0 && styles.quizUnavailable]}
             >
               <Card style={styles.card}>
                 <View style={styles.cardTop}>
@@ -485,6 +486,11 @@ export default function StudentQuizzesScreen() {
                     />
                   ) : null}
                 </View>
+
+                <View style={styles.cardActionRow}>
+                  <Text style={styles.cardActionMeta}>{count > 0 ? "Ready when you are" : "Questions are being prepared"}</Text>
+                  <View style={[styles.startQuizAction, count === 0 && styles.startQuizDisabled]}><Text style={[styles.startQuizText, count === 0 && styles.startQuizTextDisabled]}>{count > 0 ? "Start quiz" : "Unavailable"}</Text><Ionicons name={count > 0 ? "arrow-forward" : "time-outline"} size={14} color={count > 0 ? "#FFFFFF" : colors.textFaint} /></View>
+                </View>
               </Card>
             </Pressable>
           );
@@ -506,25 +512,46 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   pressed: { opacity: 0.9 },
-  practiceCta: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: GREEN,
-    borderRadius: radius.lg,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    marginBottom: -4,
-  },
-  practiceCtaText: { color: "#FFFFFF", fontWeight: "800", fontSize: 13 },
   practiceHistoryLink: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
+    alignSelf: "flex-start",
+    minHeight: 32,
+    paddingHorizontal: 4,
   },
   practiceHistoryText: { color: GREEN, fontWeight: "700", fontSize: 12 },
+  aiPracticeCard: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg },
+  aiPracticeIcon: { width: 38, height: 38, borderRadius: radius.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.primarySoft },
+  aiPracticeCopy: { flex: 1, gap: 3 },
+  aiPracticeTitle: { color: DARK_GREEN, fontSize: 12, fontWeight: "800" },
+  aiPracticeSubtitle: { color: colors.textMuted, fontSize: 10 },
+  progressSection: { gap: spacing.sm },
+  progressHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  progressTitle: { color: DARK_GREEN, fontSize: 14, fontWeight: "800" },
+  progressSubtitle: { color: colors.textMuted, fontSize: 10, marginTop: 2 },
+  summaryRow: { flexDirection: "row", gap: spacing.sm },
+  summaryTile: { flex: 1, minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: 10, paddingVertical: 9, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  summaryIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: colors.primarySoft },
+  summaryCopy: { flex: 1, gap: 2 },
+  summaryValue: { color: DARK_GREEN, fontSize: 16, fontWeight: "900" },
+  summaryLabel: { color: colors.textMuted, fontSize: 9, fontWeight: "700" },
+  quizSectionHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.xs },
+  quizSectionTitle: { color: DARK_GREEN, fontSize: 15, fontWeight: "800" },
+  quizSectionSubtitle: { color: colors.textMuted, fontSize: 10, marginTop: 3 },
+  quizCount: { minWidth: 28, height: 28, paddingHorizontal: 7, borderRadius: radius.pill, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
+  quizCountText: { color: GREEN, fontSize: 11, fontWeight: "800" },
+  resultsHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  cardActionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm, marginTop: spacing.xs },
+  cardActionMeta: { flex: 1, color: colors.textMuted, fontSize: 10 },
+  startQuizAction: { minHeight: 34, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 11, borderRadius: radius.sm, backgroundColor: GREEN },
+  startQuizDisabled: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  startQuizText: { color: "#FFFFFF", fontSize: 10, fontWeight: "800" },
+  startQuizTextDisabled: { color: colors.textFaint },
+  quizUnavailable: { opacity: 0.78 },
+  emptyPracticeLink: { minHeight: 40, alignSelf: "stretch", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, marginTop: spacing.xs, borderRadius: radius.md, backgroundColor: colors.primarySoft },
+  emptyPracticeText: { color: GREEN, fontSize: 11, fontWeight: "800" },
   bigIcon: {
     width: 58,
     height: 58,

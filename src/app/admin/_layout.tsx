@@ -5,11 +5,12 @@ import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { confirmAction, showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
-import { router, usePathname } from "expo-router";
+import { router, usePathname, useRouter } from "expo-router";
 import { Drawer } from "expo-router/drawer";
 import { useCallback, useEffect, useState } from "react";
 import {
   Image,
+  useColorScheme,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,7 +20,6 @@ import {
 
 const GREEN = "#176B45";
 const PHOTO_BUCKET = "profile-photos";
-
 type WorkingState = "locking" | "signingOut" | null;
 
 type AdminProfile = {
@@ -39,6 +39,12 @@ const MENU_ITEMS = [
     name: "users",
     label: "User Management",
     icon: "people-outline",
+  },
+  {
+    route: "/admin/notifications",
+    name: "notifications",
+    label: "Notifications",
+    icon: "notifications-outline",
   },
   {
     route: "/admin/materials",
@@ -68,6 +74,10 @@ const MENU_ITEMS = [
 
 function AdminDrawerContent() {
   const pathname = usePathname();
+  const dark = useColorScheme() === "dark";
+  const sidebar = dark
+    ? { background: "#111A14", surface: "#19241C", line: "#2C3A30", text: "#EEF4EF", muted: "#AAB8AE", inactive: "#C0CBC3", active: "#B9E4C7", activeBg: "#20392A", iconBg: "#24372A" }
+    : { background: "#FFFFFF", surface: "#FFFFFF", line: "#E8EEE9", text: "#173D2A", muted: "#7B8B80", inactive: "#425348", active: GREEN, activeBg: "#E7F3EA", iconBg: "#E5F4E9" };
 
   const [working, setWorking] = useState<WorkingState>(null);
   const [adminName, setAdminName] = useState("Administrator");
@@ -163,9 +173,6 @@ function AdminDrawerContent() {
     };
   }, [loadAdminProfile]);
 
-  const accountActive =
-    pathname === "/admin/account" || pathname.startsWith("/admin/account/");
-
   const handleLockApp = () => {
     if (isWorking) return;
 
@@ -216,7 +223,7 @@ function AdminDrawerContent() {
   };
 
   return (
-    <View style={styles.drawerContainer}>
+    <View style={[styles.drawerContainer, { backgroundColor: sidebar.background }]}>
       <ScrollView
         style={styles.drawerScroll}
         contentContainerStyle={styles.drawerScrollContent}
@@ -229,14 +236,14 @@ function AdminDrawerContent() {
           </View>
 
           <View style={styles.brandTextContainer}>
-            <Text style={styles.brandName}>StudyMate AI</Text>
-            <Text style={styles.brandSubtitle}>ADMIN PANEL</Text>
+            <Text style={[styles.brandName, { color: sidebar.text }]}>StudyMate AI</Text>
+            <Text style={[styles.brandSubtitle, { color: sidebar.muted }]}>ADMIN PANEL</Text>
           </View>
         </View>
 
         {/* Main navigation */}
         <View style={styles.menuLabelContainer}>
-          <Text style={styles.menuLabel}>MAIN MENU</Text>
+          <Text style={[styles.menuLabel, { color: sidebar.muted }]}>MAIN MENU</Text>
         </View>
 
         {MENU_ITEMS.map((item) => {
@@ -248,22 +255,23 @@ function AdminDrawerContent() {
               key={item.name}
               accessibilityRole="button"
               accessibilityState={{ selected: active }}
-              onPress={() => router.navigate(item.route)}
+              onPress={() => router.push({ pathname: "/admin/loading", params: { destination: item.name } })}
               style={({ pressed }) => [
                 styles.menuItem,
-                active && styles.menuItemActive,
+                active && { backgroundColor: sidebar.activeBg },
                 pressed && styles.menuItemPressed,
               ]}
             >
               <Ionicons
                 name={item.icon}
                 size={21}
-                color={active ? GREEN : "#425348"}
+                color={active ? sidebar.active : sidebar.inactive}
               />
 
               <Text
                 style={[
                   styles.menuItemLabel,
+                  { color: active ? sidebar.active : sidebar.inactive },
                   active && styles.menuItemLabelActive,
                 ]}
               >
@@ -275,62 +283,12 @@ function AdminDrawerContent() {
           );
         })}
 
-        {/* Account navigation: vector icon, not profile photo */}
-        <View style={[styles.menuLabelContainer, styles.accountSectionLabel]}>
-          <Text style={styles.menuLabel}>ACCOUNT</Text>
-        </View>
-
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ selected: accountActive }}
-          accessibilityLabel="Open My Account"
-          onPress={() => router.navigate("/admin/account")}
-          style={({ pressed }) => [
-            styles.menuItem,
-            accountActive && styles.menuItemActive,
-            pressed && styles.menuItemPressed,
-          ]}
-        >
-          <View
-            style={[
-              styles.accountAvatar,
-              accountActive && styles.accountAvatarActive,
-            ]}
-          >
-            <Ionicons
-              name="person-circle-outline"
-              size={25}
-              color={accountActive ? GREEN : "#425348"}
-            />
-          </View>
-
-          <View style={styles.accountMenuText}>
-            <Text
-              style={[
-                styles.menuItemLabel,
-                accountActive && styles.menuItemLabelActive,
-              ]}
-            >
-              My Account
-            </Text>
-
-            <Text style={styles.accountMenuSubtitle}>
-              Profile and account details
-            </Text>
-          </View>
-
-          <Ionicons
-            name="chevron-forward"
-            size={17}
-            color={accountActive ? GREEN : "#9AA69D"}
-          />
-        </Pressable>
       </ScrollView>
 
       {/* Sidebar footer: show the admin profile photo only here */}
-      <View style={styles.drawerFooter}>
+      <View style={[styles.drawerFooter, { backgroundColor: sidebar.background, borderTopColor: sidebar.line }]}>
         <View style={styles.adminInfo}>
-          <View style={styles.adminAvatar}>
+          <View style={[styles.adminAvatar, { backgroundColor: sidebar.iconBg }]}>
             {adminAvatarUrl && !avatarFailed ? (
               <Image
                 source={{ uri: adminAvatarUrl }}
@@ -339,36 +297,37 @@ function AdminDrawerContent() {
                 onError={handleAvatarError}
               />
             ) : (
-              <Ionicons name="person-circle-outline" size={29} color={GREEN} />
+              <Ionicons name="person-circle-outline" size={29} color={sidebar.active} />
             )}
           </View>
 
           <View style={styles.adminTextContainer}>
-            <Text style={styles.adminName} numberOfLines={1}>
+            <Text style={[styles.adminName, { color: sidebar.text }]} numberOfLines={1}>
               {adminName}
             </Text>
 
-            <Text style={styles.adminRole}>System Administrator</Text>
+            <Text style={[styles.adminRole, { color: sidebar.muted }]}>System Administrator</Text>
           </View>
 
           <View style={styles.onlineIndicator} />
         </View>
 
-        <View style={styles.footerDivider} />
+        <View style={[styles.footerDivider, { backgroundColor: sidebar.line }]} />
 
         {/* Lock App */}
         <Pressable
           accessibilityRole="button"
           disabled={isWorking}
           onPress={handleLockApp}
-          style={({ pressed }) => [
+            style={({ pressed }) => [
             styles.lockButton,
+              { backgroundColor: sidebar.activeBg },
             pressed && styles.menuItemPressed,
             isWorking && styles.disabledButton,
           ]}
         >
-          <Ionicons name="lock-closed-outline" size={21} color={GREEN} />
-          <Text style={styles.lockLabel}>Lock App</Text>
+          <Ionicons name="lock-closed-outline" size={21} color={sidebar.active} />
+            <Text style={[styles.lockLabel, { color: sidebar.active }]}>Lock App</Text>
         </Pressable>
 
         {/* Log Out */}
@@ -406,6 +365,28 @@ function AdminDrawerContent() {
 export default function AdminLayout() {
   // Shared guard: session + role + approval + central lock state.
   const guard = useRequireRole("admin");
+  const adminRouter = useRouter();
+  const dark = useColorScheme() === "dark";
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const loadUnreadCount = useCallback(async () => {
+    const { count, error } = await supabase
+      .from("admin_activity_notifications")
+      .select("id", { count: "exact", head: true })
+      .is("read_at", null);
+    if (!error) setUnreadCount(count ?? 0);
+  }, []);
+
+  useEffect(() => {
+    if (guard !== "allowed") return;
+    let active = true;
+    const refresh = async () => { if (active) await loadUnreadCount(); };
+    void refresh();
+    const channel = supabase.channel("admin-unread-notification-count")
+      .on("postgres_changes", { event: "*", schema: "public", table: "admin_activity_notifications" }, () => { void refresh(); })
+      .subscribe();
+    return () => { active = false; void supabase.removeChannel(channel); };
+  }, [guard, loadUnreadCount]);
 
   if (guard === "checking") {
     return <DashboardSkeleton />;
@@ -435,9 +416,15 @@ export default function AdminLayout() {
         headerTintColor: "#FFFFFF",
         headerTitleStyle: { fontWeight: "800" },
         headerShadowVisible: false,
-        drawerActiveTintColor: GREEN,
-        drawerActiveBackgroundColor: "#E7F3EA",
-        drawerInactiveTintColor: "#425348",
+        headerRight: () => (
+          <Pressable onPress={() => adminRouter.navigate("/admin/notifications")} accessibilityRole="button" accessibilityLabel={unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications"} style={styles.notificationButton}>
+            <Ionicons name="notifications-outline" size={22} color="#FFFFFF" />
+            {unreadCount > 0 ? <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text></View> : null}
+          </Pressable>
+        ),
+        drawerActiveTintColor: dark ? "#B9E4C7" : GREEN,
+        drawerActiveBackgroundColor: dark ? "#20392A" : "#E7F3EA",
+        drawerInactiveTintColor: dark ? "#C0CBC3" : "#425348",
         drawerLabelStyle: {
           fontSize: 14,
           fontWeight: "600",
@@ -448,11 +435,11 @@ export default function AdminLayout() {
           marginVertical: 3,
         },
         drawerStyle: {
-          backgroundColor: "#FFFFFF",
+          backgroundColor: dark ? "#111A14" : "#FFFFFF",
           width: 285,
         },
         sceneStyle: {
-          backgroundColor: "#F4F8F5",
+          backgroundColor: dark ? "#101A14" : "#F4F8F5",
         },
       }}
     >
@@ -474,6 +461,17 @@ export default function AdminLayout() {
           drawerLabel: "User Management",
           drawerIcon: ({ color, size }) => (
             <Ionicons name="people-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
+          ),
+        }}
+      />
+
+      <Drawer.Screen
+        name="notifications"
+        options={{
+          title: "Notifications",
+          drawerLabel: "Notifications",
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="notifications-outline" color={color == null || typeof color === "number" ? undefined : color} size={size} />
           ),
         }}
       />
@@ -523,6 +521,15 @@ export default function AdminLayout() {
       />
 
       <Drawer.Screen
+        name="loading"
+        options={{
+          title: "Loading",
+          drawerItemStyle: { display: "none" },
+          swipeEnabled: false,
+        }}
+      />
+
+      <Drawer.Screen
         name="account"
         options={{
           title: "My Account",
@@ -542,6 +549,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     gap: 10,
   },
+  notificationButton: { width: 42, height: 42, marginRight: 10, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  notificationBadge: { position: "absolute", top: 2, right: 0, minWidth: 17, height: 17, paddingHorizontal: 3, borderRadius: 9, backgroundColor: "#E95050", alignItems: "center", justifyContent: "center", borderWidth: 1.5, borderColor: GREEN },
+  notificationBadgeText: { color: "#FFFFFF", fontSize: 8, fontWeight: "900" },
   badge: {
     width: 72,
     height: 72,

@@ -583,6 +583,14 @@ export default function TeacherQuizzesScreen() {
     );
   };
 
+  const setSectionDifficulty = (sectionNumber: number, difficulty: SectionDifficulty) => {
+    setQuestions((current) => current.map((question) =>
+      question.sectionNumber === sectionNumber
+        ? { ...question, sectionDifficulty: difficulty, aiGenerated: false }
+        : question,
+    ));
+  };
+
   const setQuestionType = (key: string, type: QuestionType) => {
     updateQuestion(key, (current) => {
       if (current.type === type) return current;
@@ -1014,6 +1022,16 @@ export default function TeacherQuizzesScreen() {
       setModalVisible(false);
       setFormErrors({});
       await loadQuizzes("refresh");
+      showNotice(
+        status === "published"
+          ? "Quiz published successfully"
+          : editingId
+            ? "Quiz changes saved successfully"
+            : "Quiz draft saved successfully",
+        status === "published"
+          ? "Students can now take this quiz."
+          : "Your quiz updates have been saved.",
+      );
     } catch (err) {
       const rawMessage =
         err instanceof Error ? err.message : "Something went wrong.";
@@ -1025,48 +1043,42 @@ export default function TeacherQuizzesScreen() {
     }
   };
 
-  const handleToggleStatus = async (item: QuizRow) => {
+  const handleToggleStatus = (item: QuizRow) => {
     if (actionId) return;
 
     const nextStatus: QuizStatus =
       item.status === "published" ? "draft" : "published";
-
-    setActionId(item.id);
-
-    try {
-      const { data, error } = await supabase
-        .from("quizzes")
-        .update({
-          status: nextStatus,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", item.id)
-        .select("id");
-
-      if (error) throw new Error(error.message);
-
-      if (!data || data.length === 0) {
-        showNotice(
-          "Update Failed",
-          "This quiz no longer exists. Pull to refresh.",
-        );
-        void loadQuizzes("refresh");
-        return;
-      }
-
-      setItems((current) =>
-        (current ?? []).map((row) =>
-          row.id === item.id ? { ...row, status: nextStatus } : row,
-        ),
-      );
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Something went wrong.";
-      console.error("Quiz status error:", err);
-      showNotice("Update Failed", message);
-    } finally {
-      setActionId(null);
-    }
+    confirmAction(
+      nextStatus === "published" ? "Publish Quiz" : "Unpublish Quiz",
+      nextStatus === "published"
+        ? `Publish “${item.title}” so students can take it?`
+        : `Unpublish “${item.title}”? Students will no longer be able to start it.`,
+      async () => {
+        setActionId(item.id);
+        try {
+          const { data, error } = await supabase
+            .from("quizzes")
+            .update({ status: nextStatus, updated_at: new Date().toISOString() })
+            .eq("id", item.id)
+            .select("id");
+          if (error) throw new Error(error.message);
+          if (!data || data.length === 0) {
+            showNotice("Update Failed", "This quiz no longer exists. Pull to refresh.");
+            void loadQuizzes("refresh");
+            return;
+          }
+          setItems((current) => (current ?? []).map((row) => row.id === item.id ? { ...row, status: nextStatus } : row));
+          showNotice(nextStatus === "published" ? "Quiz published successfully" : "Quiz unpublished", nextStatus === "published" ? "Students can now take this quiz." : "Students can no longer start this quiz.");
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Something went wrong.";
+          console.error("Quiz status error:", err);
+          showNotice("Update Failed", message);
+        } finally {
+          setActionId(null);
+        }
+      },
+      { confirmLabel: nextStatus === "published" ? "Publish quiz" : "Unpublish", destructive: nextStatus === "draft" },
+    );
   };
 
   const handleDelete = (item: QuizRow) => {
@@ -1097,6 +1109,7 @@ export default function TeacherQuizzesScreen() {
           setItems((current) =>
             (current ?? []).filter((row) => row.id !== item.id),
           );
+          showNotice("Quiz deleted successfully", `“${item.title}” and its questions have been removed.`);
         } catch (err) {
           const message =
             err instanceof Error ? err.message : "Something went wrong.";
@@ -1748,11 +1761,23 @@ export default function TeacherQuizzesScreen() {
                 return (
                 <View key={question.key}>
                   {section.start === index ? (
-                    <View style={styles.questionSectionHeader}>
-                      <View style={styles.questionSectionNumber}><Text style={styles.questionSectionNumberText}>{section.section}</Text></View>
-                      <Text style={styles.questionSectionTitle}>Section {section.section} · {questionTypeLabel(question.type)}</Text>
-                      <Text style={styles.questionSectionDifficulty}>{difficultyLabel(question.sectionDifficulty)}</Text>
-                      <Text style={styles.questionSectionCount}>{section.count} {section.count === 1 ? "question" : "questions"}</Text>
+                    <View style={styles.questionSectionBlock}>
+                      <View style={styles.questionSectionHeader}>
+                        <View style={styles.questionSectionNumber}><Text style={styles.questionSectionNumberText}>{section.section}</Text></View>
+                        <Text style={styles.questionSectionTitle}>Section {section.section} · {questionTypeLabel(question.type)}</Text>
+                        <Text style={styles.questionSectionCount}>{section.count} {section.count === 1 ? "question" : "questions"}</Text>
+                      </View>
+                      <View style={styles.questionDifficultyPicker}>
+                        <Text style={styles.questionDifficultyLabel}>Section difficulty</Text>
+                        <View style={styles.questionDifficultyOptions}>
+                          {DIFFICULTIES.map((option) => {
+                            const selected = question.sectionDifficulty === option.value;
+                            return <Pressable key={option.value} onPress={() => setSectionDifficulty(section.section, option.value)} disabled={!questionsReady || saving} accessibilityRole="button" accessibilityState={{ selected }} accessibilityLabel={`${option.label} difficulty for section ${section.section}`} style={[styles.questionDifficultyOption, selected && styles.questionDifficultyOptionSelected, (!questionsReady || saving) && styles.disabled]}>
+                              <Text style={[styles.questionDifficultyOptionText, selected && styles.questionDifficultyOptionTextSelected]}>{option.label}</Text>
+                            </Pressable>;
+                          })}
+                        </View>
+                      </View>
                     </View>
                   ) : null}
                   <View style={styles.questionCard}>
@@ -2080,7 +2105,14 @@ export default function TeacherQuizzesScreen() {
               </Pressable>
 
               <Pressable
-                onPress={() => void handleSave("published")}
+                onPress={() => confirmAction(
+                  editingId ? "Save & Publish Quiz" : "Publish Quiz",
+                  editingId
+                    ? `Save your changes and publish “${form.title.trim() || "this quiz"}” for students?`
+                    : `Publish “${form.title.trim() || "this quiz"}” so students can take it?`,
+                  () => handleSave("published"),
+                  { confirmLabel: "Publish quiz" },
+                )}
                 disabled={saving}
                 accessibilityRole="button"
                 style={({ pressed }) => [
@@ -2407,12 +2439,19 @@ const styles = StyleSheet.create({
     color: "#5A6D60",
   },
   questionTypeTextActive: { color: GREEN },
-  questionSectionHeader: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.md },
+  questionSectionBlock: { marginTop: spacing.md, gap: spacing.xs },
+  questionSectionHeader: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   questionSectionNumber: { width: 24, height: 24, borderRadius: 12, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
   questionSectionNumberText: { color: GREEN, fontSize: 11, fontWeight: "800" },
   questionSectionTitle: { flex: 1, color: DARK_GREEN, fontSize: 12, fontWeight: "800" },
   questionSectionCount: { color: colors.textMuted, fontSize: 10, fontWeight: "700" },
-  questionSectionDifficulty: { color: GREEN, fontSize: 10, fontWeight: "800" },
+  questionDifficultyPicker: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm, paddingHorizontal: spacing.sm, paddingBottom: spacing.xs },
+  questionDifficultyLabel: { color: colors.textMuted, fontSize: 10, fontWeight: "700" },
+  questionDifficultyOptions: { flexDirection: "row", gap: 6 },
+  questionDifficultyOption: { minWidth: 58, minHeight: 30, alignItems: "center", justifyContent: "center", paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: radius.pill, backgroundColor: colors.surface },
+  questionDifficultyOptionSelected: { backgroundColor: colors.primarySoft, borderColor: GREEN },
+  questionDifficultyOptionText: { color: colors.textMuted, fontSize: 10, fontWeight: "700" },
+  questionDifficultyOptionTextSelected: { color: GREEN, fontWeight: "800" },
   emptyQuestions: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceAlt },
   emptyQuestionsText: { flex: 1, color: colors.textMuted, fontSize: 11, lineHeight: 16 },
   questionTopLeft: { flexDirection: "row", alignItems: "center", gap: 7 },
