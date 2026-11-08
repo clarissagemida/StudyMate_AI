@@ -23,3 +23,17 @@ with check (teacher_id = auth.uid() and exists (select 1 from public.profiles p 
 drop policy if exists announcements_teacher_delete on public.announcements;
 create policy announcements_teacher_delete on public.announcements for delete to authenticated
 using (teacher_id = auth.uid() or public.is_admin());
+
+create or replace function public.announcement_teacher_names(p_announcement_ids uuid[])
+returns table (teacher_id uuid, full_name text)
+language sql stable security definer set search_path = public
+as $$
+  select distinct p.id, coalesce(nullif(btrim(p.full_name), ''), 'Teacher')
+  from public.announcements a
+  join public.profiles p on p.id = a.teacher_id
+  where a.id = any(p_announcement_ids)
+    and p.role = 'teacher' and p.approval_status = 'approved'
+    and exists (select 1 from public.profiles me where me.id = auth.uid() and me.approval_status = 'approved');
+$$;
+revoke all on function public.announcement_teacher_names(uuid[]) from public, anon;
+grant execute on function public.announcement_teacher_names(uuid[]) to authenticated;

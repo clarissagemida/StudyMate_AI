@@ -3,15 +3,17 @@ import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { Alert, FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { Alert, FlatList, KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, useColorScheme, View } from "react-native";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 import { showNotice } from "@/utils/notify";
 
 type Announcement = { id: string; teacher_id: string; title: string; body: string; created_at: string };
 
 export function Announcements({ role }: { role: "teacher" | "student" }) {
+  const dark = useColorScheme() === "dark";
   const router = useRouter();
   const [rows, setRows] = useState<Announcement[]>([]);
+  const [teacherNames, setTeacherNames] = useState<Record<string, string>>({});
   const [userId, setUserId] = useState("");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -24,7 +26,16 @@ export function Announcements({ role }: { role: "teacher" | "student" }) {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) setUserId(user.id);
     const { data, error: queryError } = await supabase.from("announcements").select("id, teacher_id, title, body, created_at").order("created_at", { ascending: false }).limit(50);
-    if (queryError) setError(queryError.message); else { setRows((data ?? []) as Announcement[]); setError(""); }
+    if (queryError) setError(queryError.message); else {
+      const announcements = (data ?? []) as Announcement[];
+      setRows(announcements);
+      setError("");
+      const announcementIds = announcements.map((item) => item.id);
+      if (announcementIds.length) {
+        const { data: teachers } = await supabase.rpc("announcement_teacher_names", { p_announcement_ids: announcementIds });
+        setTeacherNames(Object.fromEntries((teachers ?? []).map((teacher: { teacher_id: string; full_name: string | null }) => [teacher.teacher_id, teacher.full_name || "Teacher"])));
+      }
+    }
     if (role === "student" && user) {
       const { data: reads } = await supabase.from("announcement_reads").select("announcement_id").eq("student_id", user.id);
       setReadIds(new Set((reads ?? []).map((read) => read.announcement_id)));
@@ -38,13 +49,15 @@ export function Announcements({ role }: { role: "teacher" | "student" }) {
     return () => { void supabase.removeChannel(channel); };
   }, [load, role]);
   const markRead = async (item: Announcement) => {
-    if (role !== "student" || !userId || readIds.has(item.id)) return;
+    if (role !== "student" || !userId || readIds.has(item.id)) return true;
     setReadIds((current) => new Set(current).add(item.id));
     const { error: readError } = await supabase.from("announcement_reads").insert({ announcement_id: item.id, student_id: userId });
     if (readError) {
       setReadIds((current) => { const next = new Set(current); next.delete(item.id); return next; });
       setError(readError.message);
+      return false;
     }
+    return true;
   };
   const resetForm = () => { setTitle(""); setBody(""); setEditingId(null); setError(""); };
   const startEdit = (item: Announcement) => { setEditingId(item.id); setTitle(item.title); setBody(item.body); setError(""); };
@@ -66,16 +79,20 @@ export function Announcements({ role }: { role: "teacher" | "student" }) {
     { text: "Delete", style: "destructive", onPress: async () => { const { error: deleteError } = await supabase.from("announcements").delete().eq("id", item.id).eq("teacher_id", userId); if (deleteError) setError(deleteError.message); else { await load(); showNotice("Announcement deleted", "The announcement has been removed for students."); } } },
   ]);
   return <SafeAreaView style={styles.safe} edges={["top"]}>
-    <FlatList data={rows} keyExtractor={(item) => item.id} contentContainerStyle={styles.content} refreshing={loading} onRefresh={() => void load()}
+    <KeyboardAvoidingView style={styles.keyboard} behavior="padding">
+    <FlatList data={rows} keyExtractor={(item) => item.id} keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, dark && styles.contentDark]} refreshing={loading} onRefresh={() => void load()}
       ListHeaderComponent={<View><View style={styles.pageHeader}><Pressable onPress={() => router.replace(role === "teacher" ? "/teacher" : "/student")} accessibilityRole="button" accessibilityLabel="Back to dashboard" style={styles.backButton}><Ionicons name="arrow-back" size={20} color={colors.primary} /></Pressable><View style={styles.headingCopy}><Text style={styles.eyebrow}>STUDYMATE AI</Text><Text style={styles.heading}>Announcements</Text></View></View><Text style={styles.subheading}>{role === "teacher" ? "Share important updates with your students." : "Updates from your teachers."}</Text>{role === "teacher" ? <View style={styles.form}><View style={styles.formHeading}><View style={styles.formHeadingText}><Text style={styles.label}>{editingId ? "EDIT ANNOUNCEMENT" : "NEW ANNOUNCEMENT"}</Text><Text style={styles.formHint}>{editingId ? "Update the details students will see." : "Write a clear, helpful update for your class."}</Text></View>{editingId ? <Pressable onPress={resetForm} disabled={saving} style={styles.cancelEdit} accessibilityRole="button"><Text style={styles.cancelEditText}>Cancel</Text></Pressable> : null}</View><TextInput value={title} onChangeText={(value) => { setTitle(value); setError(""); }} maxLength={120} placeholder="Announcement title" placeholderTextColor="#98A49C" style={styles.input} accessibilityLabel="Announcement title" /><Text style={styles.counter}>{title.length}/120</Text><TextInput value={body} onChangeText={(value) => { setBody(value); setError(""); }} maxLength={4000} multiline placeholder="Write a clear update for your students…" placeholderTextColor="#98A49C" style={[styles.input, styles.body]} accessibilityLabel="Announcement message" /><Text style={styles.counter}>{body.length}/4000</Text><Pressable onPress={() => void publish()} disabled={saving || title.trim().length < 2 || !body.trim()} style={[styles.publish, (saving || title.trim().length < 2 || !body.trim()) && styles.disabled]}><Ionicons name={saving ? "time-outline" : editingId ? "checkmark-circle-outline" : "send-outline"} size={17} color="#fff" /><Text style={styles.publishText}>{saving ? (editingId ? "Saving changes…" : "Publishing…") : editingId ? "Save changes" : "Publish announcement"}</Text></Pressable></View> : null}{error ? <Text style={styles.error}>{error.includes("announcements") && (error.includes("schema cache") || error.includes("does not exist")) ? "Announcements need to be enabled. Run supabase/announcements.sql in your Supabase project." : error}</Text> : null}</View>}
       ListEmptyComponent={!loading ? <View style={styles.empty}><Ionicons name="megaphone-outline" size={28} color={colors.primary} /><Text style={styles.emptyTitle}>No announcements yet</Text><Text style={styles.emptyCopy}>{role === "teacher" ? "Publish an update to keep your students informed." : "Teacher updates will appear here."}</Text></View> : undefined}
-      renderItem={({ item }) => <Pressable onPress={() => void markRead(item)} accessibilityRole={role === "student" ? "button" : undefined} style={[styles.card, role === "student" && !readIds.has(item.id) && styles.unreadCard]}><View style={styles.cardTop}><View style={styles.badge}><Ionicons name="megaphone-outline" size={17} color={colors.primary} /></View><View style={styles.cardHeading}><Text style={styles.cardTitle}>{item.title}</Text><View style={styles.metadataRow}><Text style={styles.date}>{new Date(item.created_at).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</Text>{role === "teacher" ? <Text style={styles.publishedTag}>PUBLISHED</Text> : null}</View></View>{role === "student" && !readIds.has(item.id) ? <View style={styles.unreadDot} /> : null}</View><Text style={styles.copy}>{item.body}</Text>{role === "teacher" && item.teacher_id === userId ? <View style={styles.cardActions}><Pressable onPress={() => startEdit(item)} style={styles.editAction} accessibilityRole="button" accessibilityLabel={`Edit ${item.title}`}><Ionicons name="create-outline" size={16} color={colors.primary} /><Text style={styles.editActionText}>Edit announcement</Text></Pressable><Pressable onPress={() => remove(item)} hitSlop={10} style={styles.deleteAction} accessibilityRole="button" accessibilityLabel={`Delete ${item.title}`}><Ionicons name="trash-outline" size={17} color="#B33A3A" /></Pressable></View> : null}</Pressable>}
+      renderItem={({ item }) => <Pressable onPress={() => role === "student" ? void markRead(item) : undefined} accessibilityRole={role === "student" ? "button" : undefined} style={[styles.card, role === "student" && !readIds.has(item.id) && styles.unreadCard]}><View style={styles.cardTop}><View style={styles.badge}><Ionicons name="megaphone-outline" size={17} color={colors.primary} /></View><View style={styles.cardHeading}><Text style={styles.cardTitle}>{item.title}</Text><View style={styles.metadataRow}><Text style={styles.date}>{new Date(item.created_at).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</Text>{role === "teacher" ? <Text style={styles.publishedTag}>PUBLISHED</Text> : null}</View></View>{role === "student" && !readIds.has(item.id) ? <View style={styles.unreadDot} /> : null}</View><Text style={styles.copy}>{item.body}</Text>{role === "student" ? <View style={styles.announcementFooter}><Text style={styles.teacherByline}>Posted by {teacherNames[item.teacher_id] ?? "Teacher"}</Text><Pressable onPress={async (event) => { event.stopPropagation(); if (await markRead(item)) router.push({ pathname: "/student/messages", params: { contactId: item.teacher_id } } as never); }} style={styles.messageTeacher} accessibilityRole="button" accessibilityLabel={`Message ${teacherNames[item.teacher_id] ?? "teacher"}`}><Ionicons name="chatbubble-ellipses-outline" size={15} color={colors.primary} /><Text style={styles.messageTeacherText}>Message teacher</Text></Pressable></View> : null}{role === "teacher" && item.teacher_id === userId ? <View style={styles.cardActions}><Pressable onPress={() => startEdit(item)} style={styles.editAction} accessibilityRole="button" accessibilityLabel={`Edit ${item.title}`}><Ionicons name="create-outline" size={16} color={colors.primary} /><Text style={styles.editActionText}>Edit announcement</Text></Pressable><Pressable onPress={() => remove(item)} hitSlop={10} style={styles.deleteAction} accessibilityRole="button" accessibilityLabel={`Delete ${item.title}`}><Ionicons name="trash-outline" size={17} color="#B33A3A" /></Pressable></View> : null}</Pressable>}
     />
+    </KeyboardAvoidingView>
   </SafeAreaView>;
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
+  keyboard: { flex: 1 },
+  contentDark: { backgroundColor: "#101A14" },
   content: { padding: spacing.xl, paddingBottom: spacing.xxxl, gap: spacing.md },
   pageHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   backButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
@@ -102,6 +119,10 @@ const styles = StyleSheet.create({
   metadataRow: { flexDirection: "row", alignItems: "center", gap: 8 }, date: { color: colors.textMuted, fontSize: 11 },
   publishedTag: { color: colors.primary, backgroundColor: colors.primarySoft, overflow: "hidden", fontSize: 8, fontWeight: "900", letterSpacing: 0.7, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 7 },
   copy: { color: colors.textPrimary, fontSize: 13, lineHeight: 20 },
+  announcementFooter: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing.sm, gap: 10 },
+  teacherByline: { color: colors.textMuted, fontSize: 11, fontWeight: "600" },
+  messageTeacher: { minHeight: 38, alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 11, borderRadius: radius.md, backgroundColor: colors.primarySoft },
+  messageTeacherText: { color: colors.primary, fontSize: 11, fontWeight: "800" },
   cardActions: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing.sm },
   editAction: { minHeight: 38, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 10, borderRadius: radius.md, backgroundColor: colors.primarySoft },
   editActionText: { color: colors.primary, fontSize: 12, fontWeight: "800" }, deleteAction: { width: 38, height: 38, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: "#FFF1F0" },

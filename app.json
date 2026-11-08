@@ -13,6 +13,7 @@
     "android": {
       "package": "com.studymateai.app",
       "versionCode": 4,
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#064E2B",
         "foregroundImage": "./assets/images/image.png",

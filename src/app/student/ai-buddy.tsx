@@ -21,7 +21,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = "#176B45";
 const DARK_GREEN = "#123D2A";
@@ -107,6 +107,13 @@ export default function StudentAiBuddyScreen() {
   const initialPrompt =
     typeof params.prompt === "string" ? params.prompt.trim() : "";
   const safeReturnTo = STUDENT_RETURN_PATHS.includes(params.returnTo as (typeof STUDENT_RETURN_PATHS)[number]) ? params.returnTo : "/student";
+  const returnToPreviousScreen = () => {
+    if (safeReturnTo === "/student/quiz-attempt") {
+      router.back();
+      return;
+    }
+    router.replace(safeReturnTo as Href);
+  };
 
   const [messages, setMessages] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState("");
@@ -307,7 +314,7 @@ export default function StudentAiBuddyScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.replace(safeReturnTo as Href)} accessibilityRole="button" accessibilityLabel="Return to previous student screen" style={styles.headerAction}>
+        <Pressable onPress={returnToPreviousScreen} accessibilityRole="button" accessibilityLabel="Return to previous student screen" style={styles.headerAction}>
           <Ionicons name="arrow-back" size={20} color={DARK_GREEN} />
         </Pressable>
         <View style={styles.headerText}>
@@ -330,8 +337,8 @@ export default function StudentAiBuddyScreen() {
 
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+        behavior="padding"
+        keyboardVerticalOffset={90}
       >
         <FlatList
           ref={listRef}

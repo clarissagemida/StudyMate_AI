@@ -14,14 +14,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FlatList,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = "#176B45";
 const DARK_GREEN = "#123D2A";
@@ -199,7 +198,7 @@ export default function TeacherAiBuddyScreen() {
         </Pressable>
       </View>
 
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={8}>
+      <KeyboardAvoidingView style={styles.flex} behavior="padding" keyboardVerticalOffset={8}>
         {!AI_ENABLED ? <View style={styles.availabilityNotice}><Ionicons name="cloud-offline-outline" size={17} color="#8A6D1F" /><Text style={styles.availabilityText}>Teacher AI Buddy is turned off in this build. Enable EXPO_PUBLIC_AI_ENABLED and reload the app to use it.</Text></View> : null}
         <FlatList
           ref={listRef}

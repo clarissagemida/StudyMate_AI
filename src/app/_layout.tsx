@@ -1,7 +1,9 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import { useColorScheme } from "react-native";
 import { useEffect } from "react";
-import { loadAdminTheme, saveAdminTheme } from "@/utils/adminTheme";
+import { loadAdminTheme } from "@/utils/adminTheme";
+import { applyAppearance, loadAccountAppearance } from "@/utils/accountAppearance";
+import { supabase } from "@/lib/supabase";
 
 import { AnimatedSplashOverlay } from "@/components/animated-icon";
 import { SweetAlertHost } from "@/components/ui/sweet-alert-host";
@@ -13,10 +15,27 @@ export default function RootLayout() {
 
   useEffect(() => {
     let active = true;
-    void loadAdminTheme().then((preference) => {
-      if (active) void saveAdminTheme(preference);
+    const applyForUser = async (userId: string | null) => {
+      try {
+        if (!userId) {
+          const preference = await loadAdminTheme();
+          if (active) applyAppearance(preference);
+          return;
+        }
+        const { data: profile } = await supabase.from("profiles").select("role").eq("id", userId).maybeSingle();
+        const preference = profile?.role === "student" || profile?.role === "teacher"
+          ? await loadAccountAppearance(userId)
+          : await loadAdminTheme();
+        if (active) applyAppearance(preference);
+      } catch (error) {
+        console.warn("Unable to apply saved appearance preference:", error);
+      }
+    };
+    void supabase.auth.getSession().then(({ data: { session } }) => applyForUser(session?.user.id ?? null));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setTimeout(() => { if (active) void applyForUser(session?.user.id ?? null); }, 0);
     });
-    return () => { active = false; };
+    return () => { active = false; subscription.unsubscribe(); };
   }, []);
 
   return (

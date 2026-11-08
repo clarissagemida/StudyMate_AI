@@ -1,15 +1,15 @@
-import { supabase } from "@/lib/supabase";
-import { showNotice } from "@/utils/notify";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { DashboardSkeleton } from "@/components/ui/dashboard-skeleton";
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { SectionHeader } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
+import { useRequireRole } from "@/hooks/useRequireRole";
+import { supabase } from "@/lib/supabase";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { type ComponentProps, useCallback, useMemo, useState } from "react";
 import {
   Image,
   Pressable,
@@ -19,11 +19,11 @@ import {
   Text,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
+import { showNotice } from "@/utils/notify";
 
 const GREEN = colors.primary;
-const DARK_GREEN = colors.primaryDark;
-const BG = colors.background;
+const HEADER_GREEN = "#1E6348";
 const PHOTO_BUCKET = "profile-photos";
 
 type MaterialRow = {
@@ -34,178 +34,146 @@ type MaterialRow = {
   created_at: string;
 };
 
+type StudentActivityRow = {
+  student_id: string;
+  full_name: string;
+  last_attempt_at: string | null;
+};
+
+type DashboardSummary = {
+  materials_count: number;
+  quiz_count: number;
+  published_quiz_count: number;
+  student_count: number;
+  quiz_attempt_count: number;
+  recent_activity: StudentActivityRow[];
+};
+
 type DashboardData = {
   fullName: string;
   avatarUrl: string | null;
-  // null means "the table does not exist yet" — never a fake number.
-  materials: MaterialRow[] | null;
-  quizzes: number | null;
-  publishedQuizzes: number | null;
-  students: number | null;
+  recentMaterials: MaterialRow[] | null;
+  summary: DashboardSummary | null;
 };
 
 type LoadMode = "initial" | "refresh";
 
-// PostgREST reports a table that has not been created yet with these codes.
-// In that case the dashboard shows "—" instead of inventing statistics.
-function isMissingRelation(
-  error: { code?: string; message?: string } | null,
-): boolean {
+function isMissingRelation(error: { code?: string; message?: string } | null) {
   if (!error) return false;
-  if (
-    error.code === "PGRST202" ||
-    error.code === "PGRST205" ||
-    error.code === "42883" ||
-    error.code === "42P01"
-  ) {
+  if (["PGRST202", "PGRST204", "PGRST205", "42703", "42883", "42P01"].includes(error.code ?? "")) {
     return true;
   }
-
   const message = (error.message ?? "").toLowerCase();
-  return (
-    message.includes("could not find the table") ||
+  return message.includes("could not find the table") ||
     message.includes("could not find the function") ||
-    message.includes("does not exist")
+    message.includes("does not exist");
+}
+
+function formatDate(value: string | null) {
+  if (!value) return "Date unavailable";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function MetricCard({
+  icon,
+  value,
+  label,
+  detail,
+}: {
+  icon: ComponentProps<typeof Ionicons>["name"];
+  value: string | number;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <Card style={styles.metricCard}>
+      <View style={styles.metricTop}>
+        <View style={styles.metricIcon}>
+          <Ionicons name={icon} size={18} color={GREEN} />
+        </View>
+        <Text style={styles.metricLabel}>{label}</Text>
+      </View>
+      <Text style={styles.metricValue}>{value}</Text>
+      <Text style={styles.metricDetail} numberOfLines={1}>{detail}</Text>
+    </Card>
   );
 }
 
-function formatDate(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) return "Date unavailable";
-
-  return date.toLocaleDateString("en-PH", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
 export default function TeacherDashboardScreen() {
+  const guard = useRequireRole("teacher");
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
 
   const loadDashboard = useCallback(async (mode: LoadMode) => {
     if (mode === "refresh") setRefreshing(true);
 
     try {
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
-
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
       if (authError || !user) {
         router.replace("/login");
         return;
       }
 
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("full_name, avatar_path")
-        .eq("id", user.id)
-        .maybeSingle();
+      // Keep profile/material reads scoped to this teacher. Aggregate counts
+      // and activity come from a teacher-verified RPC that omits student scores.
+      const [profileResult, recentMaterialsResult, summaryResult] = await Promise.all([
+        supabase.from("profiles").select("full_name, avatar_path").eq("id", user.id).maybeSingle(),
+        supabase.from("materials").select("id, title, subject, status, created_at").eq("teacher_id", user.id).is("archived_at", null).order("created_at", { ascending: false }).limit(4),
+        supabase.rpc("teacher_dashboard_summary"),
+      ]);
 
-      if (profileError) throw new Error(profileError.message);
+      if (profileResult.error) throw new Error(profileResult.error.message);
+
+      let recentMaterials: MaterialRow[] | null = null;
+      if (!isMissingRelation(recentMaterialsResult.error)) {
+        if (recentMaterialsResult.error) throw new Error(recentMaterialsResult.error.message);
+        recentMaterials = (recentMaterialsResult.data ?? []) as MaterialRow[];
+      }
+
+      let summary: DashboardSummary | null = null;
+      if (!isMissingRelation(summaryResult.error)) {
+        if (summaryResult.error) throw new Error(summaryResult.error.message);
+        summary = summaryResult.data as DashboardSummary;
+      }
 
       let avatarUrl: string | null = null;
-
-      if (profile?.avatar_path) {
-        const { data: signed, error: imageError } = await supabase.storage
-          .from(PHOTO_BUCKET)
-          .createSignedUrl(profile.avatar_path, 3600);
-
-        if (!imageError) {
-          avatarUrl = signed?.signedUrl ?? null;
+      if (profileResult.data?.avatar_path) {
+        const { data: signed, error: signedError } = await supabase.storage.from(PHOTO_BUCKET)
+          .createSignedUrl(profileResult.data.avatar_path, 3600);
+        if (signedError) {
+          console.warn("Teacher dashboard photo URL error:", signedError.message);
+        } else if (signed?.signedUrl) {
+          avatarUrl = signed.signedUrl;
         }
       }
 
-      // The teacher's own materials, newest first.
-      let materials: MaterialRow[] | null = null;
-      const { data: materialRows, error: materialsError } = await supabase
-        .from("materials")
-        .select("id, title, subject, status, created_at")
-        .eq("teacher_id", user.id)
-        .order("created_at", { ascending: false });
-
-      if (isMissingRelation(materialsError)) {
-        materials = null;
-      } else {
-        if (materialsError) throw new Error(materialsError.message);
-        materials = (materialRows ?? []) as MaterialRow[];
-      }
-
-      // Quizzes appear once the quiz tables have been created.
-      let quizzes: number | null = null;
-      let publishedQuizzes: number | null = null;
-
-      const { count: quizTotal, error: quizError } = await supabase
-        .from("quizzes")
-        .select("id", { count: "exact", head: true })
-        .eq("teacher_id", user.id);
-
-      if (!isMissingRelation(quizError)) {
-        if (quizError) throw new Error(quizError.message);
-
-        const { count: quizPublished, error: publishedError } = await supabase
-          .from("quizzes")
-          .select("id", { count: "exact", head: true })
-          .eq("teacher_id", user.id)
-          .eq("status", "published");
-
-        if (publishedError) throw new Error(publishedError.message);
-
-        quizzes = quizTotal ?? 0;
-        publishedQuizzes = quizPublished ?? 0;
-      }
-
-      // Students who attempted this teacher's quizzes. Without the analytics
-      // RPC the dashboard shows "—" rather than a guessed count.
-      let students: number | null = null;
-      const { data: studentRows, error: studentsError } = await supabase.rpc(
-        "teacher_students",
-      );
-
-      if (!isMissingRelation(studentsError)) {
-        if (studentsError) throw new Error(studentsError.message);
-        students = Array.isArray(studentRows) ? studentRows.length : 0;
-      }
-
       setData({
-        fullName: profile?.full_name?.trim() || "Teacher",
+        fullName: profileResult.data?.full_name?.trim() || "Teacher",
         avatarUrl,
-        materials,
-        quizzes,
-        publishedQuizzes,
-        students,
+        recentMaterials,
+        summary,
       });
+      setAvatarFailed(false);
       setError(null);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Something went wrong.";
+      const message = err instanceof Error ? err.message : "Something went wrong.";
       console.error("Teacher dashboard error:", err);
-
-      if (mode === "refresh") {
-        showNotice("Refresh Failed", message);
-      } else {
-        setError(message);
-      }
+      if (mode === "refresh") showNotice("Refresh Failed", message);
+      else setError(message);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  // The loader lives inside the effect so no state is applied synchronously
-  // while the effect itself runs.
-  useEffect(() => {
-    const run = async () => {
-      await loadDashboard("initial");
-    };
-
-    void run();
-  }, [loadDashboard]);
+  useFocusEffect(useCallback(() => {
+    if (guard === "allowed") void loadDashboard("initial");
+  }, [guard, loadDashboard]));
 
   const handleRetry = () => {
     setLoading(true);
@@ -213,479 +181,168 @@ export default function TeacherDashboardScreen() {
     void loadDashboard("initial");
   };
 
-  if (loading && !data) {
-    return <DashboardSkeleton />;
-  }
+  const recentActivity = useMemo(() => data?.summary?.recent_activity ?? [], [data?.summary]);
 
+  if (guard === "checking" || (loading && !data)) return <DashboardSkeleton />;
+  if (guard === "denied") {
+    return <StateView variant="error" title="Access denied" message="This dashboard is restricted to approved teacher accounts." />;
+  }
   if (error && !data) {
-    return (
-      <StateView
-        variant="error"
-        title="Unable to load dashboard"
-        message={error}
-        onRetry={handleRetry}
-      />
-    );
+    return <StateView variant="error" title="Unable to load dashboard" message={error} onRetry={handleRetry} />;
   }
 
-  const materials = data?.materials ?? null;
-  const quizzes = data?.quizzes ?? null;
-  const publishedQuizzes = data?.publishedQuizzes ?? null;
-  const students = data?.students ?? null;
-  const recentMaterials = materials ? materials.slice(0, 4) : [];
-  const tablesMissing =
-    materials === null || quizzes === null || students === null;
+  const firstName = data?.fullName.split(/\s+/)[0] || "Teacher";
+  const recentMaterials = data?.recentMaterials ?? null;
+  const missingSetup = data?.recentMaterials === null || data?.summary === null;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      {refreshing ? (
-        <ProgressIndicator
-          style={styles.refreshProgress}
-          accessibilityLabel="Refreshing teacher dashboard"
-        />
-      ) : null}
+    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+      {refreshing ? <ProgressIndicator style={styles.refreshProgress} accessibilityLabel="Refreshing teacher dashboard" /> : null}
       <ScrollView
         contentContainerStyle={styles.container}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => {
-              void loadDashboard("refresh");
-            }}
-            tintColor="transparent"
-            colors={["transparent"]}
-            progressBackgroundColor="transparent"
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void loadDashboard("refresh")} tintColor="transparent" colors={["transparent"]} progressBackgroundColor="transparent" />}
       >
-        {/* Welcome + profile photo */}
-        <View style={styles.welcomeCard}>
-          <View style={styles.welcomeText}>
-            <Text style={styles.welcomeEyebrow}>TEACHER DASHBOARD</Text>
-            <Text style={styles.welcomeTitle}>
-              Welcome back, {data?.fullName ?? "Teacher"}!
-            </Text>
-            <Text style={styles.welcomeSubtitle}>
-              Manage your learning materials and track your classes.
-            </Text>
+        <View style={styles.welcomeRow}>
+          <View style={styles.welcomeCopy}>
+            <Text style={styles.eyebrow}>TEACHER PORTAL</Text>
+            <Text style={styles.welcomeTitle}>Welcome back, {firstName}</Text>
+            <Text style={styles.welcomeSubtitle}>Your classroom at a glance.</Text>
           </View>
-
-          <View style={styles.avatar}>
-            {data?.avatarUrl ? (
-              <Image
-                source={{ uri: data.avatarUrl }}
-                style={styles.avatarImage}
-                resizeMode="cover"
-                accessibilityLabel="Your profile photo"
-              />
-            ) : (
-              <Ionicons name="person-outline" size={30} color={GREEN} />
-            )}
-          </View>
+          <Pressable onPress={() => router.push("/teacher/profile")} accessibilityRole="button" accessibilityLabel="Open your profile" style={({ pressed }) => [styles.avatar, pressed && styles.pressed]}>
+            {data?.avatarUrl && !avatarFailed ? <Image key={data.avatarUrl} source={{ uri: data.avatarUrl }} style={styles.avatarImage} resizeMode="cover" accessibilityLabel="Your profile photo" onError={() => setAvatarFailed(true)} /> : <Text style={styles.avatarFallback}>{firstName.slice(0, 1).toUpperCase()}</Text>}
+          </Pressable>
         </View>
 
-        {/* Real statistics; "—" means the table is not configured yet */}
-        <View style={styles.statsRow}>
-          <Card style={styles.statCard}>
-            <View style={styles.statIcon}>
-              <Ionicons name="book-outline" size={20} color={GREEN} />
-            </View>
-            <Text style={styles.statValue}>
-              {materials ? materials.length : "—"}
-            </Text>
-            <Text style={styles.statLabel}>Learning materials</Text>
-          </Card>
-
-          <Card style={styles.statCard}>
-            <View style={styles.statIcon}>
-              <Ionicons name="clipboard-outline" size={20} color={GREEN} />
-            </View>
-            <Text style={styles.statValue}>
-              {quizzes === null ? "—" : quizzes}
-            </Text>
-            <Text style={styles.statLabel}>Quizzes</Text>
-          </Card>
-
-          <Card style={styles.statCard}>
-            <View style={styles.statIcon}>
-              <Ionicons name="checkmark-done-outline" size={20} color={GREEN} />
-            </View>
-            <Text style={styles.statValue}>
-              {publishedQuizzes === null ? "—" : publishedQuizzes}
-            </Text>
-            <Text style={styles.statLabel}>Published</Text>
-          </Card>
-
-          <Card style={styles.statCard}>
-            <View style={styles.statIcon}>
-              <Ionicons name="people-outline" size={20} color={GREEN} />
-            </View>
-            <Text style={styles.statValue}>
-              {students === null ? "—" : students}
-            </Text>
-            <Text style={styles.statLabel}>Students</Text>
-          </Card>
+        <SectionHeader title="Overview" />
+        <View style={styles.metricsGrid}>
+          <MetricCard icon="people-outline" label="Students" value={data?.summary?.student_count ?? "—"} detail="Connected to your quizzes" />
+          <MetricCard icon="checkmark-circle-outline" label="Published quizzes" value={data?.summary?.published_quiz_count ?? "—"} detail={data?.summary ? `of ${data.summary.quiz_count} total quizzes` : "Quiz library"} />
+          <MetricCard icon="book-outline" label="Learning materials" value={data?.summary?.materials_count ?? "—"} detail="Active drafts and published" />
+          <MetricCard icon="bar-chart-outline" label="Quiz submissions" value={data?.summary?.quiz_attempt_count ?? "—"} detail="Across your students" />
         </View>
 
-        {tablesMissing && (
-          <View style={styles.notice}>
-            <Ionicons name="information-circle-outline" size={18} color={GREEN} />
-            <Text style={styles.noticeText}>
-              Some statistics are unavailable because their Supabase setup is
-              missing. Run the SQL files in the supabase/ folder, then reload
-              this dashboard.
-            </Text>
+        {missingSetup ? (
+          <View style={styles.setupNotice}>
+            <Ionicons name="information-circle-outline" size={17} color={GREEN} />
+          <Text style={styles.setupNoticeText}>Some figures are unavailable. Check your connection or database setup.</Text>
           </View>
-        )}
+        ) : null}
 
-        {/* Quick actions */}
-        <Text style={styles.sectionTitle}>Quick actions</Text>
-
-        <Pressable
-          onPress={() => router.push("/teacher/ai-buddy")}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.aiBuddyAction, pressed && styles.pressed]}
-        >
-          <View style={styles.aiBuddyIcon}>
-            <Ionicons name="sparkles" size={23} color="#FFFFFF" />
-          </View>
-          <View style={styles.primaryActionText}>
-            <Text style={styles.primaryActionTitle}>Open Teacher AI Buddy</Text>
-            <Text style={styles.primaryActionSubtitle}>
-              Get Groq-powered help with lesson planning and teaching ideas
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#FFFFFF" />
+        <Pressable onPress={() => router.push("/teacher/material")} accessibilityRole="button" accessibilityLabel="Create a learning material" style={({ pressed }) => [styles.createCard, pressed && styles.pressed]}>
+          <View style={styles.createIcon}><Ionicons name="add" size={24} color={GREEN} /></View>
+          <View style={styles.createCopy}><Text style={styles.createTitle}>Create learning material</Text><Text style={styles.createSubtitle}>Prepare and share a lesson with your students.</Text></View>
+          <Ionicons name="arrow-forward" size={19} color="#FFFFFF" />
         </Pressable>
 
-        <Pressable
-          onPress={() => router.push("/teacher/material")}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.primaryAction, pressed && styles.pressed]}
-        >
-          <View style={styles.primaryActionIcon}>
-            <Ionicons name="add-circle-outline" size={24} color="#FFFFFF" />
-          </View>
-          <View style={styles.primaryActionText}>
-            <Text style={styles.primaryActionTitle}>
-              Create learning materials
-            </Text>
-            <Text style={styles.primaryActionSubtitle}>
-              Write a new draft or publish it to your students
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#FFFFFF" />
-        </Pressable>
+        <SectionHeader title="Quick access" />
+        <View style={styles.quickGrid}>
+          <Pressable onPress={() => router.push("/teacher/quizzes")} accessibilityRole="button" accessibilityLabel="Create or manage quizzes" style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}>
+            <View style={styles.quickIcon}><Ionicons name="clipboard-outline" size={19} color={GREEN} /></View><View style={styles.quickCopy}><Text style={styles.quickTitle}>Quizzes</Text><Text style={styles.quickSubtitle}>Create and manage</Text></View><Ionicons name="chevron-forward" size={15} color={colors.textFaint} />
+          </Pressable>
+          <Pressable onPress={() => router.push("/teacher/messages")} accessibilityRole="button" accessibilityLabel="Open messages" style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}>
+            <View style={styles.quickIcon}><Ionicons name="chatbubbles-outline" size={19} color={GREEN} /></View><View style={styles.quickCopy}><Text style={styles.quickTitle}>Messages</Text><Text style={styles.quickSubtitle}>Connect with students</Text></View><Ionicons name="chevron-forward" size={15} color={colors.textFaint} />
+          </Pressable>
+          <Pressable onPress={() => router.push("/teacher/students")} accessibilityRole="button" accessibilityLabel="Open student progress" style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}>
+            <View style={styles.quickIcon}><Ionicons name="people-outline" size={19} color={GREEN} /></View><View style={styles.quickCopy}><Text style={styles.quickTitle}>Students</Text><Text style={styles.quickSubtitle}>Track class progress</Text></View><Ionicons name="chevron-forward" size={15} color={colors.textFaint} />
+          </Pressable>
+          <Pressable onPress={() => router.push("/teacher/ai-buddy")} accessibilityRole="button" accessibilityLabel="Open Teacher AI Buddy" style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}>
+            <View style={styles.quickIcon}><Ionicons name="sparkles-outline" size={19} color={GREEN} /></View><View style={styles.quickCopy}><Text style={styles.quickTitle}>AI Buddy</Text><Text style={styles.quickSubtitle}>Plan a lesson</Text></View><Ionicons name="chevron-forward" size={15} color={colors.textFaint} />
+          </Pressable>
+        </View>
 
-        <Pressable
-          onPress={() => router.push("/teacher/quizzes")}
-          accessibilityRole="button"
-          accessibilityLabel="Create or manage quizzes"
-          style={({ pressed }) => [styles.pendingAction, pressed && styles.pressed]}
-        >
-          <View style={styles.pendingActionIcon}>
-            <Ionicons name="clipboard-outline" size={22} color={GREEN} />
-          </View>
-          <View style={styles.primaryActionText}>
-            <Text style={styles.pendingActionTitle}>Create a quiz</Text>
-            <Text style={styles.pendingActionSubtitle}>
-              Draft with AI or add multiple-choice and true/false questions
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={GREEN} />
-        </Pressable>
-
-        <Pressable
-          onPress={() => router.push("/teacher/messages")}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.pendingAction, pressed && styles.pressed]}
-        >
-          <View style={styles.pendingActionIcon}>
-            <Ionicons name="chatbubbles-outline" size={22} color={GREEN} />
-          </View>
-          <View style={styles.primaryActionText}>
-            <Text style={styles.pendingActionTitle}>Teacher–student messages</Text>
-            <Text style={styles.pendingActionSubtitle}>
-              Private conversations with students from your classes
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={GREEN} />
-        </Pressable>
-
-        <Pressable
-          onPress={() => router.push("/teacher/students")}
-          accessibilityRole="button"
-          accessibilityLabel="Open student progress"
-          style={({ pressed }) => [styles.pendingAction, pressed && styles.pressed]}
-        >
-          <View style={styles.pendingActionIcon}>
-            <Ionicons name="people-outline" size={22} color={GREEN} />
-          </View>
-          <View style={styles.primaryActionText}>
-            <Text style={styles.pendingActionTitle}>Student progress</Text>
-            <Text style={styles.pendingActionSubtitle}>
-              Review attempts and average scores from your quizzes
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={GREEN} />
-        </Pressable>
-
-        {/* Recent materials */}
-        <SectionHeader
-          title="Recent materials"
-          actionLabel={materials && materials.length > 0 ? "See all" : undefined}
-          onAction={
-            materials && materials.length > 0
-              ? () => router.push("/teacher/material")
-              : undefined
-          }
-        />
-
-        {materials === null ? (
-          <Card style={styles.emptyBox}>
-            <Ionicons name="cloud-offline-outline" size={26} color={colors.textFaint} />
-            <Text style={styles.emptyTitle}>Materials unavailable</Text>
-            <Text style={styles.emptyText}>
-              Complete the Supabase materials setup to load your recent work.
-            </Text>
-          </Card>
-        ) : recentMaterials.length === 0 ? (
-          <Card style={styles.emptyBox}>
-            <Ionicons name="document-text-outline" size={26} color={colors.textFaint} />
-            <Text style={styles.emptyTitle}>Nothing here yet</Text>
-            <Text style={styles.emptyText}>
-              Create your first learning material to get started.
-            </Text>
-          </Card>
-        ) : (
-          recentMaterials.map((material) => (
-            <Pressable
-              key={material.id}
-              onPress={() => router.push("/teacher/material")}
-              accessibilityRole="button"
-              style={({ pressed }) => pressed && styles.pressed}
-            >
-              <Card style={styles.materialRow}>
-                <View style={styles.materialIcon}>
-                  <Ionicons
-                    name="document-text-outline"
-                    size={20}
-                    color={GREEN}
-                  />
+        <View>
+          <SectionHeader title="Recent class activity" actionLabel={recentActivity.length ? "View students" : undefined} onAction={recentActivity.length ? () => router.push("/teacher/students") : undefined} />
+          {!data?.summary ? (
+            <Card style={styles.emptyBox}><Ionicons name="pulse-outline" size={22} color={colors.textFaint} /><Text style={styles.emptyText}>Class activity is not available yet.</Text></Card>
+          ) : recentActivity.length === 0 ? (
+            <Card style={styles.emptyBox}><Ionicons name="pulse-outline" size={22} color={colors.textFaint} /><Text style={styles.emptyTitle}>No quiz activity yet</Text><Text style={styles.emptyText}>Student submissions will appear here.</Text></Card>
+          ) : (
+            <Card style={styles.activityCard}>
+              {recentActivity.map((student, index) => (
+                <View key={student.student_id} style={[styles.activityRow, index > 0 && styles.activityRowBorder]}>
+                  <View style={styles.activityAvatar}><Text style={styles.activityInitial}>{(student.full_name || "S").slice(0, 1).toUpperCase()}</Text></View>
+                  <View style={styles.activityCopy}><Text style={styles.activityName} numberOfLines={1}>{student.full_name || "Student"}</Text><Text style={styles.activityMeta}>Last submission · {formatDate(student.last_attempt_at)}</Text></View>
+                  <Ionicons name="checkmark-circle" size={17} color={colors.success} />
                 </View>
+              ))}
+            </Card>
+          )}
+        </View>
 
-                <View style={styles.materialText}>
-                  <Text style={styles.materialTitle} numberOfLines={1}>
-                    {material.title}
-                  </Text>
-                  <Text style={styles.materialMeta} numberOfLines={1}>
-                    {material.subject} · {formatDate(material.created_at)}
-                  </Text>
-                </View>
-
-                <Chip
-                  label={material.status === "published" ? "Published" : "Draft"}
-                  tone={material.status === "published" ? "success" : "warning"}
-                />
-              </Card>
-            </Pressable>
-          ))
-        )}
-
-        <Text style={styles.footer}>STUDYMATE AI · TEACHER PORTAL</Text>
+        <View>
+          <SectionHeader title="Recent materials" actionLabel={data?.summary?.materials_count ? "See all" : undefined} onAction={data?.summary?.materials_count ? () => router.push("/teacher/material") : undefined} />
+          {recentMaterials === null ? (
+            <Card style={styles.emptyBox}><Ionicons name="cloud-offline-outline" size={23} color={colors.textFaint} /><Text style={styles.emptyTitle}>Materials unavailable</Text><Text style={styles.emptyText}>Check the Supabase materials setup to show recent work.</Text></Card>
+          ) : recentMaterials.length === 0 ? (
+            <Card style={styles.emptyBox}><Ionicons name="document-text-outline" size={23} color={colors.textFaint} /><Text style={styles.emptyTitle}>No materials yet</Text><Text style={styles.emptyText}>Create your first lesson resource to get started.</Text></Card>
+          ) : (
+            <Card style={styles.materialList} padded={false}>
+              {recentMaterials.map((material, index) => (
+                <Pressable key={material.id} onPress={() => router.push("/teacher/material")} accessibilityRole="button" accessibilityLabel={`Open ${material.title}`} style={({ pressed }) => [styles.materialRow, index > 0 && styles.materialDivider, pressed && styles.rowPressed]}>
+                  <View style={styles.materialIcon}><Ionicons name="document-text-outline" size={18} color={GREEN} /></View>
+                  <View style={styles.materialText}><Text style={styles.materialTitle} numberOfLines={1}>{material.title}</Text><Text style={styles.materialMeta} numberOfLines={1}>{material.subject || "General"} · {formatDate(material.created_at)}</Text></View>
+                  <Chip label={material.status === "published" ? "Published" : "Draft"} tone={material.status === "published" ? "success" : "warning"} />
+                </Pressable>
+              ))}
+            </Card>
+          )}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: BG },
-  refreshProgress: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    width: "100%",
-    height: 3,
-    borderRadius: 0,
-    zIndex: 10,
-  },
-  container: { padding: spacing.xl, paddingBottom: spacing.xxxl + 8, gap: spacing.md },
-  pressed: { opacity: 0.9 },
-  welcomeCard: {
-    backgroundColor: GREEN,
-    borderRadius: radius.xxl,
-    padding: spacing.xl,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-  },
-  welcomeText: { flex: 1 },
-  welcomeEyebrow: {
-    color: "#C9E6D4",
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 1.6,
-  },
-  welcomeTitle: {
-    color: "#FFFFFF",
-    fontSize: 21,
-    fontWeight: "800",
-    marginTop: spacing.sm,
-  },
-  welcomeSubtitle: {
-    color: "#DFF1E6",
-    fontSize: 12,
-    marginTop: 6,
-    lineHeight: 17,
-  },
-  avatar: {
-    width: 66,
-    height: 66,
-    borderRadius: radius.xxl,
-    overflow: "hidden",
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  safeArea: { flex: 1, backgroundColor: colors.background },
+  refreshProgress: { position: "absolute", top: 0, left: 0, width: "100%", height: 3, borderRadius: 0, zIndex: 10 },
+  container: { width: "100%", maxWidth: 760, alignSelf: "center", paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.xxxl + 8, gap: spacing.lg },
+  pressed: { opacity: 0.82, transform: [{ scale: 0.99 }] },
+  rowPressed: { backgroundColor: colors.surfaceAlt },
+  welcomeRow: { minHeight: 132, flexDirection: "row", alignItems: "center", gap: spacing.md, backgroundColor: HEADER_GREEN, borderRadius: radius.xxl, paddingHorizontal: spacing.lg, paddingVertical: spacing.lg },
+  welcomeCopy: { flex: 1 },
+  eyebrow: { color: "#D2E6DA", fontSize: 10, fontWeight: "800", letterSpacing: 1.5 },
+  welcomeTitle: { color: "#FFFFFF", fontSize: 21, lineHeight: 27, fontWeight: "800", marginTop: 5 },
+  welcomeSubtitle: { color: "#E2EEE7", fontSize: 12, lineHeight: 17, marginTop: 5 },
+  avatar: { width: 88, height: 88, borderRadius: 44, overflow: "hidden", backgroundColor: "#E8F3EB", borderWidth: 3, borderColor: "rgba(255,255,255,0.9)", alignItems: "center", justifyContent: "center" },
   avatarImage: { width: "100%", height: "100%" },
-  statsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm + 2 },
-  statCard: {
-    flexGrow: 1,
-    flexBasis: "45%",
-    padding: spacing.md + 2,
-    alignItems: "flex-start",
-  },
-  statIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.md,
-    backgroundColor: colors.primarySoft,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: spacing.sm + 2,
-  },
-  statValue: { fontSize: 24, fontWeight: "800", color: DARK_GREEN },
-  statLabel: {
-    fontSize: 11,
-    color: colors.textMuted,
-    fontWeight: "600",
-    marginTop: 3,
-  },
-  notice: {
-    flexDirection: "row",
-    gap: spacing.sm + 2,
-    backgroundColor: colors.primarySoft,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    alignItems: "flex-start",
-  },
-  noticeText: { flex: 1, fontSize: 12, lineHeight: 18, color: "#3F5A49" },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: DARK_GREEN,
-    marginTop: spacing.xs,
-  },
-  primaryAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    backgroundColor: GREEN,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-  },
-  aiBuddyAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    backgroundColor: DARK_GREEN,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-  },
-  aiBuddyIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.md,
-    backgroundColor: "rgba(255,255,255,0.18)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  primaryActionIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.md,
-    backgroundColor: "rgba(255,255,255,0.18)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  primaryActionText: { flex: 1 },
-  primaryActionTitle: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" },
-  primaryActionSubtitle: {
-    color: "#DFF1E6",
-    fontSize: 11,
-    marginTop: spacing.xs,
-    lineHeight: 16,
-  },
-  pendingAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  pendingActionIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.md,
-    backgroundColor: colors.primarySoft,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  pendingActionTitle: { fontSize: 15, fontWeight: "800", color: DARK_GREEN },
-  pendingActionSubtitle: {
-    fontSize: 11,
-    color: colors.textMuted,
-    marginTop: spacing.xs,
-  },
-  emptyBox: {
-    padding: spacing.xxl,
-    alignItems: "center",
-    gap: 6,
-  },
-  emptyTitle: { fontSize: 14, fontWeight: "800", color: colors.textPrimary },
-  emptyText: {
-    fontSize: 12,
-    color: colors.textMuted,
-    textAlign: "center",
-    lineHeight: 17,
-  },
-  materialRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    padding: spacing.md + 2,
-  },
-  materialIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: radius.md,
-    backgroundColor: colors.primarySoft,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  materialText: { flex: 1 },
-  materialTitle: { fontSize: 14, fontWeight: "700", color: colors.textPrimary },
-  materialMeta: { fontSize: 11, color: colors.textMuted, marginTop: 3 },
-  footer: {
-    textAlign: "center",
-    color: "#A0AAA3",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1.5,
-    marginTop: spacing.md,
-  },
+  avatarFallback: { color: GREEN, fontSize: 30, fontWeight: "800" },
+  metricsGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  metricCard: { width: "48%", flexGrow: 1, minHeight: 116, padding: spacing.md, gap: 5 },
+  metricTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  metricIcon: { width: 32, height: 32, borderRadius: 11, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
+  metricLabel: { flex: 1, color: colors.textMuted, fontSize: 12, fontWeight: "700" },
+  metricValue: { color: colors.textStrong, fontSize: 24, fontWeight: "800", marginTop: 1 },
+  metricDetail: { color: colors.textMuted, fontSize: 10, lineHeight: 14 },
+  setupNotice: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, backgroundColor: colors.primarySoft, borderRadius: radius.md, padding: spacing.md },
+  setupNoticeText: { flex: 1, color: colors.textPrimary, fontSize: 11, lineHeight: 16 },
+  createCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 88, backgroundColor: GREEN, borderRadius: radius.lg, padding: spacing.lg },
+  createIcon: { width: 42, height: 42, borderRadius: 14, backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center" },
+  createCopy: { flex: 1 },
+  createTitle: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
+  createSubtitle: { color: "#DFF1E6", fontSize: 11, lineHeight: 16, marginTop: 4 },
+  quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  quickCard: { width: "48%", flexGrow: 1, minHeight: 82, flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.sm + 2, gap: spacing.sm },
+  quickIcon: { width: 34, height: 34, borderRadius: 12, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
+  quickCopy: { flex: 1, gap: 3 },
+  quickTitle: { color: colors.textStrong, fontSize: 11, fontWeight: "800" },
+  quickSubtitle: { color: colors.textMuted, fontSize: 9, lineHeight: 12 },
+  activityCard: { paddingVertical: 0, paddingHorizontal: spacing.md },
+  activityRow: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: spacing.md },
+  activityRowBorder: { borderTopWidth: 1, borderTopColor: colors.divider },
+  activityAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
+  activityInitial: { color: GREEN, fontSize: 13, fontWeight: "800" },
+  activityCopy: { flex: 1, gap: 3 },
+  activityName: { color: colors.textPrimary, fontSize: 12, fontWeight: "700" },
+  activityMeta: { color: colors.textMuted, fontSize: 10 },
+  emptyBox: { alignItems: "center", gap: spacing.sm, padding: spacing.xl },
+  emptyTitle: { color: colors.textPrimary, fontSize: 13, fontWeight: "800", textAlign: "center" },
+  emptyText: { color: colors.textMuted, fontSize: 11, textAlign: "center", lineHeight: 16 },
+  materialList: { overflow: "hidden", padding: 0 },
+  materialRow: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  materialDivider: { borderTopWidth: 1, borderTopColor: colors.divider },
+  materialIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.primarySoft, alignItems: "center", justifyContent: "center" },
+  materialText: { flex: 1, gap: 3 },
+  materialTitle: { color: colors.textPrimary, fontSize: 12, fontWeight: "700" },
+  materialMeta: { color: colors.textMuted, fontSize: 10 },
 });

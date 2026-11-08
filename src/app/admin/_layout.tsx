@@ -25,6 +25,8 @@ type WorkingState = "locking" | "signingOut" | null;
 type AdminProfile = {
   full_name: string | null;
   avatar_path: string | null;
+  role: string;
+  approval_status: string;
 };
 
 const MENU_ITEMS = [
@@ -87,30 +89,36 @@ function AdminDrawerContent() {
   const isWorking = working !== null;
   const signingOut = working === "signingOut";
 
-  const loadAdminProfile = useCallback(async (isActive?: () => boolean) => {
+  const clearAdminProfile = useCallback(() => {
+    setAdminName("Administrator");
+    setAdminAvatarUrl(null);
+    setAvatarFailed(false);
+  }, []);
+
+  const loadAdminProfile = useCallback(async (isActive?: () => boolean, knownUserId?: string) => {
     const active = () => isActive?.() ?? true;
 
     try {
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
-
-      if (authError) throw authError;
+      let userId = knownUserId;
+      if (!userId) {
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+        userId = session?.user.id;
+      }
 
       if (!active()) return;
 
-      if (!user) {
-        setAdminName("Administrator");
-        setAdminAvatarUrl(null);
-        setAvatarFailed(false);
+      // A signed-out event can race with drawer unmounting. Treat that as a
+      // normal session transition instead of logging it as a profile error.
+      if (!userId) {
+        clearAdminProfile();
         return;
       }
 
       const { data, error } = await supabase
         .from("profiles")
-        .select("full_name, avatar_path")
-        .eq("id", user.id)
+        .select("full_name, avatar_path, role, approval_status")
+        .eq("id", userId)
         .maybeSingle();
 
       if (error) throw error;
@@ -118,6 +126,11 @@ function AdminDrawerContent() {
       if (!active()) return;
 
       const profile = data as AdminProfile | null;
+
+      if (!profile || profile.role !== "admin" || profile.approval_status !== "approved") {
+        clearAdminProfile();
+        return;
+      }
 
       setAdminName(profile?.full_name?.trim() || "Administrator");
       setAvatarFailed(false);
@@ -138,10 +151,14 @@ function AdminDrawerContent() {
       setAdminAvatarUrl(signedImage?.signedUrl ?? null);
     } catch (error) {
       if (!active()) return;
+      if (error instanceof Error && error.message.toLowerCase().includes("auth session missing")) {
+        clearAdminProfile();
+        return;
+      }
       console.error("Unable to load sidebar admin profile:", error);
       setAdminAvatarUrl(null);
     }
-  }, []);
+  }, [clearAdminProfile]);
 
   // Refresh the profile when navigating between admin screens. The loader is
   // awaited inside an effect-local runner so state is never applied
@@ -162,16 +179,26 @@ function AdminDrawerContent() {
 
   // Refresh profile information when the authentication session changes.
   useEffect(() => {
+    let active = true;
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(() => {
-      void loadAdminProfile();
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) {
+        clearAdminProfile();
+        return;
+      }
+      // Defer Supabase queries until after its auth callback releases the
+      // internal auth lock.
+      setTimeout(() => {
+        if (active) void loadAdminProfile(() => active, session.user.id);
+      }, 0);
     });
 
     return () => {
+      active = false;
       subscription.unsubscribe();
     };
-  }, [loadAdminProfile]);
+  }, [clearAdminProfile, loadAdminProfile]);
 
   const handleLockApp = () => {
     if (isWorking) return;

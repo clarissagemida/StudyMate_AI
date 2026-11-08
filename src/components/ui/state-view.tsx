@@ -2,7 +2,7 @@ import { ScreenSkeleton } from "@/components/ui/screen-skeleton";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { ComponentProps, ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
 
@@ -35,6 +35,7 @@ export function StateView({
   retryLabel = "Try Again",
   children,
 }: StateViewProps) {
+  const dark = useColorScheme() === "dark";
   if (variant === "loading") {
     return <ScreenSkeleton />;
   }
@@ -42,7 +43,7 @@ export function StateView({
   const isError = variant === "error";
 
   return (
-    <View style={styles.center}>
+    <View style={[styles.center, dark && styles.centerDark]}>
       <View style={[styles.badge, isError ? styles.errorBadge : styles.emptyBadge]}>
         <Ionicons
           name={icon ?? (isError ? "cloud-offline-outline" : "folder-open-outline")}
@@ -51,8 +52,8 @@ export function StateView({
         />
       </View>
 
-      {title ? <Text style={styles.title}>{title}</Text> : null}
-      {message ? <Text style={styles.message}>{message}</Text> : null}
+      {title ? <Text style={[styles.title, dark && styles.titleDark]}>{title}</Text> : null}
+      {message ? <Text style={[styles.message, dark && styles.messageDark]}>{message}</Text> : null}
       {children}
 
       {onRetry ? (
@@ -78,6 +79,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xxxl,
     gap: spacing.md,
   },
+  centerDark: { backgroundColor: "#101A14" },
   badge: {
     width: 62,
     height: 62,
@@ -99,6 +101,8 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     textAlign: "center",
   },
+  titleDark: { color: "#EEF4EF" },
+  messageDark: { color: "#AAB8AE" },
   retry: {
     flexDirection: "row",
     alignItems: "center",

@@ -1,6 +1,6 @@
 import { useRequireRole } from "@/hooks/useRequireRole";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 import { router } from "expo-router";
 import { useEffect } from "react";
 import { colors } from "@/theme/tokens";

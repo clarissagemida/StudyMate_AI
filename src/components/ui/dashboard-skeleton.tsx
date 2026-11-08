@@ -9,10 +9,10 @@ export function DashboardSkeleton() {
     <View
       accessible
       accessibilityRole="progressbar"
-      accessibilityLabel="Loading your dashboard"
+      accessibilityLabel="Preparing your dashboard"
       accessibilityState={{ busy: true }}
       role="progressbar"
-      aria-valuetext="Loading your dashboard"
+      aria-valuetext="Preparing your dashboard"
       style={styles.container}
     >
       <View style={styles.header}>

@@ -3,30 +3,33 @@ import { supabase } from "@/lib/supabase";
 import { setAppLocked } from "@/utils/appLock";
 import { deleteAccount } from "@/utils/deleteAccount";
 import { confirmAction, showNotice } from "@/utils/notify";
-import { uploadProfilePhoto } from "@/utils/uploadProfilePhoto";
+import { uploadPendingProfilePhoto, uploadProfilePhoto } from "@/utils/uploadProfilePhoto";
 import { StatusPill } from "@/components/ui/chip";
 import { StateView } from "@/components/ui/state-view";
 import { ChangePasswordModal } from "@/components/change-password-modal";
+import { AppearancePreferenceSelector } from "@/components/appearance-preference-selector";
 import { colors } from "@/theme/tokens";
+import { loadAccountAppearance, saveAccountAppearance, type AppearancePreference } from "@/utils/accountAppearance";
+import { getProfilePhotoUrl } from "@/utils/profilePhoto";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   Image,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = colors.primary;
 const BG = colors.background;
-const PHOTO_BUCKET = "profile-photos";
-
 type StudentProfile = {
   full_name: string | null;
   student_id: string | null;
@@ -38,11 +41,14 @@ type WorkingState = "photo" | "signingOut" | "deleting" | null;
 
 export default function StudentProfileScreen() {
   const router = useRouter();
+  const dark = useColorScheme() === "dark";
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<StudentProfile | null>(null);
   const [email, setEmail] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
+  const [appearance, setAppearance] = useState<AppearancePreference>("system");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarFailed, setAvatarFailed] = useState(false);
 
@@ -65,21 +71,8 @@ export default function StudentProfileScreen() {
 
   const isWorking = working !== null;
 
-  const resolveAvatarUrl = async (path: string | null) => {
-    if (!path) return null;
-
-    const { data, error } = await supabase.storage
-      .from(PHOTO_BUCKET)
-      .createSignedUrl(path, 3600);
-
-    if (error) throw error;
-
-    if (!data?.signedUrl) {
-      throw new Error("Supabase did not return a profile photo URL.");
-    }
-
-    const separator = data.signedUrl.includes("?") ? "&" : "?";
-    return `${data.signedUrl}${separator}profile_refresh=${Date.now()}`;
+  const resolveAvatarUrl = async (path: string | null, ownerId?: string) => {
+    return getProfilePhotoUrl(path, ownerId);
   };
 
   const loadProfile = useCallback(async () => {
@@ -94,6 +87,15 @@ export default function StudentProfileScreen() {
       if (!user) {
         router.replace("/login");
         return;
+      }
+
+      setUserId(user.id);
+      setAppearance(await loadAccountAppearance(user.id));
+
+      try {
+        await uploadPendingProfilePhoto(user.id);
+      } catch (photoError) {
+        console.warn("Could not finish saving the selected student photo:", photoError);
       }
 
       setEmail(user.email ?? "");
@@ -120,7 +122,7 @@ export default function StudentProfileScreen() {
       setLoadError(null);
 
       try {
-        setAvatarUrl(await resolveAvatarUrl(row.avatar_path));
+        setAvatarUrl(await resolveAvatarUrl(row.avatar_path, user.id));
       } catch (photoError) {
         console.error("Profile photo URL error:", photoError);
         setAvatarUrl(null);
@@ -158,7 +160,7 @@ export default function StudentProfileScreen() {
         setProfile((current) =>
           current ? { ...current, avatar_path: newPath } : current,
         );
-        setAvatarUrl(await resolveAvatarUrl(newPath));
+        setAvatarUrl(await resolveAvatarUrl(newPath, userId ?? undefined));
         setAvatarFailed(false);
       }
     } catch (err) {
@@ -338,25 +340,40 @@ export default function StudentProfileScreen() {
 
   const saveProfile = async () => {
     if (editSaving) return;
+    const nextFullName = editFullName.trim();
+    const nextStudentId = editStudentId.trim();
+    if (nextFullName.length < 2) {
+      showNotice("Name Required", "Enter your full name using at least 2 characters.");
+      return;
+    }
     setEditSaving(true);
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in");
-      const updates: Record<string, any> = {
-        full_name: editFullName.trim() || null,
-      };
-      if (editStudentId.trim()) {
-        updates.student_id = editStudentId.trim();
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!user) throw new Error("Your session has expired. Sign in again and retry.");
+
+      const { data: updatedProfile, error: updateError } = await supabase
+        .from("profiles")
+        .update({ full_name: nextFullName, student_id: nextStudentId || null })
+        .eq("id", user.id)
+        .select("id, full_name, student_id, approval_status, avatar_path")
+        .maybeSingle();
+
+      if (updateError) {
+        if (updateError.code === "23505") throw new Error("That student ID is already in use. Check it and try another one.");
+        throw new Error(updateError.message);
       }
-      const { error } = await supabase.from("profiles").update(updates).eq("id", user.id);
-      if (error) throw error;
-      setProfile((p) => (p ? { ...p, full_name: updates.full_name ?? p.full_name, student_id: updates.student_id ?? p.student_id } : p));
+      if (!updatedProfile) throw new Error("Supabase did not update your profile. Check your connection and try again.");
+
+      setProfile(updatedProfile as StudentProfile);
+      setEditFullName(updatedProfile.full_name ?? "");
+      setEditStudentId(updatedProfile.student_id ?? "");
       setEditModalVisible(false);
       showNotice("Profile Updated", "Your profile has been updated.");
-    } catch (e: any) {
-      showNotice("Update Failed", e.message || "Could not update profile");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not update your profile. Please try again.";
+      console.error("Student profile update failed:", error);
+      showNotice("Update Failed", message);
     } finally {
       setEditSaving(false);
     }
@@ -372,24 +389,31 @@ export default function StudentProfileScreen() {
     setPwdModalVisible(true);
   };
 
+  const handleAppearanceChange = async (value: AppearancePreference) => {
+    if (!userId) return;
+    setAppearance(value);
+    await saveAccountAppearance(userId, value);
+  };
+
   const signingOut = working === "signingOut";
   const deleting = working === "deleting";
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
+    <SafeAreaView style={[styles.safeArea, dark && styles.safeAreaDark]} edges={["top"]}>
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, dark && styles.contentDark]}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.pageHeader}>
           <Pressable onPress={() => router.replace("/student")} accessibilityRole="button" accessibilityLabel="Back to student dashboard" style={styles.backButton}>
             <Ionicons name="arrow-back" size={20} color={GREEN} />
           </Pressable>
-          <Text style={styles.headerTitle}>Profile & Settings</Text>
+          <Text style={[styles.headerTitle, dark && styles.textDark]}>Profile & Settings</Text>
         </View>
 
         {/* Identity card */}
-        <View style={styles.card}>
+        <View style={[styles.card, dark && styles.cardDark]}>
           <View style={styles.avatarWrapper}>
             {showAvatar ? (
               <Image
@@ -397,7 +421,10 @@ export default function StudentProfileScreen() {
                 source={{ uri: avatarUrl! }}
                 style={styles.avatar}
                 resizeMode="cover"
-                onError={() => setAvatarFailed(true)}
+                onError={(event) => {
+                  console.warn("Student profile photo render error:", event.nativeEvent.error);
+                  setAvatarFailed(true);
+                }}
               />
             ) : (
               <View style={styles.avatarPlaceholder}>
@@ -415,8 +442,8 @@ export default function StudentProfileScreen() {
             />
           </View>
 
-          <Text style={styles.name}>{fullName}</Text>
-          <Text style={styles.email}>{email || "No email found"}</Text>
+          <Text style={[styles.name, dark && styles.textDark]}>{fullName}</Text>
+          <Text style={[styles.email, dark && styles.mutedDark]}>{email || "No email found"}</Text>
 
           <View style={styles.badgeRow}>
             <StatusPill icon="school-outline" label="Student" tone="brand" />
@@ -466,9 +493,9 @@ export default function StudentProfileScreen() {
         </View>
 
         {/* Account details */}
-        <Text style={styles.sectionTitle}>Account Details</Text>
+        <Text style={[styles.sectionTitle, dark && styles.textDark]}>Account Details</Text>
 
-        <View style={styles.formCard}>
+        <View style={[styles.formCard, dark && styles.cardDark]}>
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>Full Name</Text>
             <Text style={styles.fieldValue}>{fullName}</Text>
@@ -497,6 +524,8 @@ export default function StudentProfileScreen() {
             <Text style={styles.fieldValue}>Student</Text>
           </View>
         </View>
+
+        <AppearancePreferenceSelector value={appearance} onChange={(value) => void handleAppearanceChange(value)} />
 
         <Pressable
           onPress={handleOpenEdit}
@@ -625,23 +654,27 @@ export default function StudentProfileScreen() {
         {/* Edit Profile Modal */}
         <Modal visible={editModalVisible} transparent animationType="fade" onRequestClose={() => setEditModalVisible(false)}>
           <Pressable style={styles.modalBackdrop} onPress={() => setEditModalVisible(false)} />
-          <View style={additionalStyles.modalSheet}>
+          <KeyboardAvoidingView style={additionalStyles.editModalAvoider} behavior="padding">
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={additionalStyles.editModalScroll}>
+          <View style={[additionalStyles.modalSheet, dark && additionalStyles.modalSheetDark]}>
             <View style={additionalStyles.modalHeaderRow}>
-              <Text style={additionalStyles.modalTitle}>Edit Profile</Text>
-              <Pressable onPress={() => setEditModalVisible(false)}>
-                <Ionicons name="close" size={22} color="#123D2A" />
+              <Text style={[additionalStyles.modalTitle, dark && additionalStyles.modalTextDark]}>Edit Profile</Text>
+              <Pressable onPress={() => setEditModalVisible(false)} disabled={editSaving}>
+                <Ionicons name="close" size={22} color={dark ? "#C0CEC3" : "#123D2A"} />
               </Pressable>
             </View>
             <View style={{ padding: 18, gap: 12 }}>
-              <Text style={additionalStyles.inputLabel}>Full Name</Text>
-              <TextInput value={editFullName} onChangeText={setEditFullName} style={additionalStyles.input} placeholder="Full name" placeholderTextColor="#9AA69E" />
-              <Text style={additionalStyles.inputLabel}>Student ID</Text>
-              <TextInput value={editStudentId} onChangeText={setEditStudentId} style={additionalStyles.input} placeholder="Student ID" placeholderTextColor="#9AA69E" />
+              <Text style={[additionalStyles.inputLabel, dark && additionalStyles.inputLabelDark]}>Full Name</Text>
+              <TextInput value={editFullName} onChangeText={setEditFullName} editable={!editSaving} style={[additionalStyles.input, dark && additionalStyles.inputDark]} placeholder="Full name" placeholderTextColor={dark ? "#87958B" : "#9AA69E"} autoCapitalize="words" returnKeyType="next" />
+              <Text style={[additionalStyles.inputLabel, dark && additionalStyles.inputLabelDark]}>Student ID</Text>
+              <TextInput value={editStudentId} onChangeText={setEditStudentId} editable={!editSaving} style={[additionalStyles.input, dark && additionalStyles.inputDark]} placeholder="Student ID" placeholderTextColor={dark ? "#87958B" : "#9AA69E"} autoCapitalize="characters" returnKeyType="done" onSubmitEditing={() => void saveProfile()} />
               <Pressable onPress={saveProfile} disabled={editSaving} style={[additionalStyles.primaryButton, editSaving && additionalStyles.buttonDisabled]}>
                 <Text style={additionalStyles.primaryButtonText}>{editSaving ? "Saving..." : "Save Changes"}</Text>
               </Pressable>
             </View>
           </View>
+          </ScrollView>
+          </KeyboardAvoidingView>
         </Modal>
 
         <ChangePasswordModal
@@ -757,9 +790,13 @@ export default function StudentProfileScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  safeAreaDark: { backgroundColor: "#101A14" },
   pressed: { opacity: 0.8 },
   disabled: { opacity: 0.6 },
   content: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40, gap: 4 },
+  contentDark: { backgroundColor: "#101A14" },
+  textDark: { color: "#EEF4EF" },
+  mutedDark: { color: "#AAB8AE" },
   pageHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
   backButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: "#E8F3EB", alignItems: "center", justifyContent: "center" },
   headerTitle: {
@@ -778,6 +815,7 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 18,
   },
+  cardDark: { backgroundColor: "#19241C", borderColor: "#2C3A30" },
   avatarWrapper: { position: "relative", marginBottom: 8 },
   avatar: {
     width: 104,
@@ -966,11 +1004,17 @@ const styles = StyleSheet.create({
 
 const additionalStyles = StyleSheet.create({
   linkText: { color: GREEN, fontWeight: '700', fontSize: 13 },
-  modalSheet: { position: 'absolute', left: 16, right: 16, top: '12%', backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E5EDE7', maxHeight: '76%' },
+  editModalAvoider: { ...StyleSheet.absoluteFillObject, justifyContent: "center", paddingHorizontal: 16 },
+  editModalScroll: { flexGrow: 1, justifyContent: "center" },
+  modalSheet: { width: "100%", alignSelf: "center", backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E5EDE7', maxHeight: '76%' },
+  modalSheetDark: { backgroundColor: "#19241C", borderColor: "#2C3A30" },
   modalHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingTop: 16 },
   modalTitle: { fontSize: 16, fontWeight: '800', color: '#123D2A' },
+  modalTextDark: { color: "#EEF4EF" },
   inputLabel: { fontSize: 12, fontWeight: '700', color: '#6B7F72' },
+  inputLabelDark: { color: "#AAB8AE" },
   input: { borderWidth: 1, borderColor: '#DDE7E0', borderRadius: 12, paddingHorizontal: 12, minHeight: 46, fontSize: 14, color: '#20392B', backgroundColor: '#F7FAF8' },
+  inputDark: { borderColor: "#34463A", color: "#EEF4EF", backgroundColor: "#202D24" },
   passwordRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#DDE7E0', borderRadius: 12, backgroundColor: '#F7FAF8', paddingHorizontal: 12 },
   passwordInput: { flex: 1, minHeight: 46, fontSize: 14, color: '#20392B' },
   strengthBox: { backgroundColor: '#F7FAF8', borderRadius: 12, borderWidth: 1, borderColor: '#E5EDE7', padding: 12, gap: 4 },

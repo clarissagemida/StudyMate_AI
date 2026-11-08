@@ -8,20 +8,24 @@ import { uploadProfilePhoto } from "@/utils/uploadProfilePhoto";
 import { StatusPill } from "@/components/ui/chip";
 import { StateView } from "@/components/ui/state-view";
 import { colors } from "@/theme/tokens";
+import { AppearancePreferenceSelector } from "@/components/appearance-preference-selector";
+import { loadAccountAppearance, saveAccountAppearance, type AppearancePreference } from "@/utils/accountAppearance";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
 import {
   Image,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = colors.primary;
 const BG = colors.background;
@@ -58,11 +62,13 @@ function isMissingColumn(
 }
 
 export default function TeacherProfileScreen() {
+  const dark = useColorScheme() === "dark";
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [appearance, setAppearance] = useState<AppearancePreference>("system");
   const [email, setEmail] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarFailed, setAvatarFailed] = useState(false);
@@ -99,8 +105,7 @@ export default function TeacherProfileScreen() {
       throw new Error("Supabase did not return a profile photo URL.");
     }
 
-    const separator = data.signedUrl.includes("?") ? "&" : "?";
-    return `${data.signedUrl}${separator}profile_refresh=${Date.now()}`;
+    return data.signedUrl;
   };
 
   const loadProfile = useCallback(async () => {
@@ -118,6 +123,7 @@ export default function TeacherProfileScreen() {
       }
 
       setUserId(user.id);
+      setAppearance(await loadAccountAppearance(user.id));
       setEmail(user.email ?? "");
 
       const baseColumns = "full_name, approval_status, avatar_path";
@@ -182,15 +188,11 @@ export default function TeacherProfileScreen() {
     }
   }, []);
 
-  // Loader lives inside the effect so no state is applied synchronously
-  // while the effect itself runs.
-  useEffect(() => {
-    const run = async () => {
-      await loadProfile();
-    };
-
-    void run();
-  }, [loadProfile]);
+  useFocusEffect(
+    useCallback(() => {
+      void loadProfile();
+    }, [loadProfile]),
+  );
 
   const handleChangePhoto = async () => {
     if (isWorking) return;
@@ -438,6 +440,10 @@ export default function TeacherProfileScreen() {
   }
 
   const fullName = profile?.full_name?.trim() || "Teacher";
+  const handleAppearanceChange = async (value: AppearancePreference) => {
+    setAppearance(value);
+    if (userId) await saveAccountAppearance(userId, value);
+  };
   const approvalStatus = profile?.approval_status ?? "unknown";
   const showAvatar = avatarUrl && !avatarFailed;
   const uploadingPhoto = working === "photo";
@@ -445,9 +451,11 @@ export default function TeacherProfileScreen() {
   const deleting = working === "deleting";
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
+    <SafeAreaView style={[styles.safeArea, dark && styles.safeAreaDark]} edges={["top"]}>
+      <KeyboardAvoidingView style={styles.profileKeyboard} behavior="padding">
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, dark && styles.contentDark]}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.pageHeader}>
@@ -466,7 +474,10 @@ export default function TeacherProfileScreen() {
                 source={{ uri: avatarUrl! }}
                 style={styles.avatar}
                 resizeMode="cover"
-                onError={() => setAvatarFailed(true)}
+                onError={(event) => {
+                  console.error("Teacher profile photo display error:", event.nativeEvent.error);
+                  setAvatarFailed(true);
+                }}
               />
             ) : (
               <View style={styles.avatarPlaceholder}>
@@ -535,9 +546,9 @@ export default function TeacherProfileScreen() {
         </View>
 
         {/* Account details */}
-        <Text style={styles.sectionTitle}>Account Details</Text>
+        <Text style={[styles.sectionTitle, dark && styles.textDark]}>Account Details</Text>
 
-        <View style={styles.formCard}>
+        <View style={[styles.formCard, dark && styles.formCardDark]}>
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>Full Name</Text>
             <Text style={styles.fieldValue}>{fullName}</Text>
@@ -557,6 +568,9 @@ export default function TeacherProfileScreen() {
             <Text style={styles.fieldValue}>Teacher</Text>
           </View>
         </View>
+
+        <Text style={[styles.sectionTitle, dark && styles.textDark]}>Appearance</Text>
+        <AppearancePreferenceSelector value={appearance} onChange={(value) => void handleAppearanceChange(value)} />
 
         <Text style={styles.helperText}>
           Role and approval status are managed by administrators and cannot be
@@ -750,6 +764,7 @@ export default function TeacherProfileScreen() {
           </View>
         </Pressable>
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <ChangePasswordModal
         visible={passwordModalVisible}
@@ -864,9 +879,13 @@ export default function TeacherProfileScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  profileKeyboard: { flex: 1 },
+  safeAreaDark: { backgroundColor: "#101A14" },
   pressed: { opacity: 0.8 },
   disabled: { opacity: 0.6 },
   content: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40, gap: 4 },
+  contentDark: { backgroundColor: "#101A14" },
+  textDark: { color: "#EEF4EF" },
   headerTitle: {
     fontSize: 24,
     fontWeight: "800",
@@ -949,6 +968,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 4,
   },
+  formCardDark: { backgroundColor: "#19241C", borderColor: "#2C3A30" },
   field: { paddingVertical: 13, gap: 4 },
   fieldLabel: { fontSize: 11, fontWeight: "700", color: "#87948B" },
   fieldValue: { fontSize: 14, color: "#20392B" },

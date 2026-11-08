@@ -19,7 +19,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = colors.primary;
 const DARK_GREEN = colors.primaryDark;
@@ -320,6 +320,7 @@ export default function TeacherStudentsScreen() {
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.student_id}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -605,7 +606,7 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
   listContent: {
     paddingHorizontal: spacing.xl,
-    paddingTop: spacing.lg,
+    paddingTop: 72,
     paddingBottom: spacing.xxxl + 8,
     gap: spacing.sm + 2,
   },

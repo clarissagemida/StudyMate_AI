@@ -7,7 +7,7 @@ import { ScreenTitle } from "@/components/ui/section-header";
 import { StateView } from "@/components/ui/state-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
@@ -18,7 +18,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = colors.primary;
 const DARK_GREEN = colors.primaryDeep;
@@ -33,6 +33,7 @@ type QuizRow = {
   topic: string;
   difficulty: Difficulty;
   description: string;
+  max_attempts: number | null;
   created_at: string;
 };
 
@@ -43,6 +44,8 @@ type AttemptRow = {
   total: number;
   created_at: string;
 };
+
+type QuizAttemptStatus = { used: number; max: number | null; canTake: boolean };
 
 type LoadMode = "initial" | "refresh";
 
@@ -83,6 +86,8 @@ function scorePercent(score: number, total: number) {
 
 export default function StudentQuizzesScreen() {
   const router = useRouter();
+  const { subject } = useLocalSearchParams<{ subject?: string | string[] }>();
+  const initialSubject = Array.isArray(subject) ? subject[0] : subject;
   const [items, setItems] = useState<QuizRow[] | null>(null);
   const [questionCounts, setQuestionCounts] = useState<Record<string, number>>(
     {},
@@ -91,12 +96,13 @@ export default function StudentQuizzesScreen() {
     Record<string, { score: number; total: number }>
   >({});
   const [attempts, setAttempts] = useState<AttemptRow[]>([]);
+  const [attemptStatus, setAttemptStatus] = useState<Record<string, QuizAttemptStatus>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tableMissing, setTableMissing] = useState(false);
 
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSubject?.trim() ?? "");
 
   const loadData = useCallback(async (mode: LoadMode) => {
     if (mode === "refresh") setRefreshing(true);
@@ -115,7 +121,7 @@ export default function StudentQuizzesScreen() {
       const { data, error } = await supabase
         .from("quizzes")
         .select(
-          "id, title, subject, topic, difficulty, description, created_at",
+          "id, title, subject, topic, difficulty, description, max_attempts, created_at",
         )
         .eq("status", "published")
         .order("created_at", { ascending: false });
@@ -126,6 +132,7 @@ export default function StudentQuizzesScreen() {
         setQuestionCounts({});
         setBestScores({});
         setAttempts([]);
+        setAttemptStatus({});
         setLoadError(null);
         return;
       }
@@ -198,9 +205,33 @@ export default function StudentQuizzesScreen() {
         }
         setAttempts([]);
         setBestScores({});
+        setAttemptStatus({});
       } else {
         const list = (attemptRows ?? []) as AttemptRow[];
         setAttempts(list);
+
+        const { data: statusRows, error: statusError } = await supabase.rpc("student_quiz_attempt_status");
+        if (!statusError && Array.isArray(statusRows)) {
+          const statuses: Record<string, QuizAttemptStatus> = {};
+          for (const row of statusRows as { quiz_id: string; attempts_used: number; max_attempts: number | null; can_take: boolean }[]) {
+            statuses[row.quiz_id] = {
+              used: Number(row.attempts_used) || 0,
+              max: row.max_attempts == null ? null : Number(row.max_attempts),
+              canTake: Boolean(row.can_take),
+            };
+          }
+          setAttemptStatus(statuses);
+        } else {
+          if (statusError) console.warn("Could not load attempt limits:", statusError.message);
+          const counts: Record<string, number> = {};
+          for (const attempt of list) counts[attempt.quiz_id] = (counts[attempt.quiz_id] ?? 0) + 1;
+          const statuses: Record<string, QuizAttemptStatus> = {};
+          for (const quiz of rows) {
+            const used = counts[quiz.id] ?? 0;
+            statuses[quiz.id] = { used, max: quiz.max_attempts, canTake: quiz.max_attempts == null || used < quiz.max_attempts };
+          }
+          setAttemptStatus(statuses);
+        }
 
         // Best (highest-scoring) attempt per quiz, for the "Your best" badge.
         const best: Record<string, { score: number; total: number }> = {};
@@ -293,6 +324,11 @@ export default function StudentQuizzesScreen() {
   };
 
   const openQuiz = (item: QuizRow) => {
+    const status = attemptStatus[item.id];
+    if (status && !status.canTake) {
+      showNotice("No Attempts Remaining", "You have used all attempts allowed for this quiz.");
+      return;
+    }
     if ((questionCounts[item.id] ?? 0) === 0) {
       showNotice(
         "No questions yet",
@@ -336,6 +372,7 @@ export default function StudentQuizzesScreen() {
       <FlatList
         data={visibleItems}
         keyExtractor={(item) => item.id}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -428,19 +465,25 @@ export default function StudentQuizzesScreen() {
         ListFooterComponent={recentAttempts.length > 0 ? <Card style={styles.resultsCard}>
           <View style={styles.resultsHeader}><Text style={styles.resultsTitle}>Recent quiz attempts</Text></View>
           {recentAttempts.map((attempt) => <View key={attempt.id} style={styles.resultRow}><View style={styles.resultText}><Text style={styles.resultTitle} numberOfLines={1}>{attempt.title}</Text><Text style={styles.resultDate}>{formatDate(attempt.created_at)}</Text></View><Text style={styles.resultScore}>{scorePercent(attempt.score, attempt.total)}%</Text></View>)}
-        </Card> : null}
+        </Card> : undefined}
         renderItem={({ item }) => {
           const count = questionCounts[item.id] ?? 0;
           const best = bestScores[item.id];
+          const status = attemptStatus[item.id];
+          const exhausted = status ? !status.canTake : false;
+          const canStart = count > 0 && !exhausted;
+          const attemptLabel = status
+            ? status.max == null ? `${status.used} ${status.used === 1 ? "attempt" : "attempts"}` : `${status.used}/${status.max} attempts`
+            : null;
 
           return (
             <Pressable
               onPress={() => openQuiz(item)}
-              disabled={count === 0}
-              accessibilityState={{ disabled: count === 0 }}
+              disabled={!canStart}
+              accessibilityState={{ disabled: !canStart }}
               accessibilityRole="button"
-              accessibilityLabel={`Start quiz ${item.title}`}
-              style={({ pressed }) => [pressed && styles.pressed, count === 0 && styles.quizUnavailable]}
+              accessibilityLabel={`${exhausted ? "Completed" : status?.used ? "Retake" : "Start"} quiz ${item.title}`}
+              style={({ pressed }) => [pressed && styles.pressed, !canStart && styles.quizUnavailable]}
             >
               <Card style={styles.card}>
                 <View style={styles.cardTop}>
@@ -485,11 +528,12 @@ export default function StudentQuizzesScreen() {
                       label={`Best ${scorePercent(best.score, best.total)}%`}
                     />
                   ) : null}
+                  {attemptLabel ? <Chip label={exhausted ? `Completed · ${attemptLabel}` : attemptLabel} tone={exhausted ? "success" : "brand"} /> : null}
                 </View>
 
                 <View style={styles.cardActionRow}>
-                  <Text style={styles.cardActionMeta}>{count > 0 ? "Ready when you are" : "Questions are being prepared"}</Text>
-                  <View style={[styles.startQuizAction, count === 0 && styles.startQuizDisabled]}><Text style={[styles.startQuizText, count === 0 && styles.startQuizTextDisabled]}>{count > 0 ? "Start quiz" : "Unavailable"}</Text><Ionicons name={count > 0 ? "arrow-forward" : "time-outline"} size={14} color={count > 0 ? "#FFFFFF" : colors.textFaint} /></View>
+                  <Text style={styles.cardActionMeta}>{count === 0 ? "Questions are being prepared" : exhausted ? "You’ve used all allowed attempts" : status?.used ? "Another attempt is available" : "Ready when you are"}</Text>
+                  <View style={[styles.startQuizAction, !canStart && styles.startQuizDisabled]}><Text style={[styles.startQuizText, !canStart && styles.startQuizTextDisabled]}>{count === 0 ? "Unavailable" : exhausted ? "Completed" : status?.used ? "Retake quiz" : "Start quiz"}</Text><Ionicons name={canStart ? "arrow-forward" : "checkmark-circle-outline"} size={14} color={canStart ? "#FFFFFF" : colors.textFaint} /></View>
                 </View>
               </Card>
             </Pressable>

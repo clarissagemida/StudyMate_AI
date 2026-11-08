@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, text } from "@/theme/tokens";
 import { ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
 type SectionHeaderProps = {
   title: string;
@@ -18,9 +18,10 @@ export function SectionHeader({
   onAction,
   style,
 }: SectionHeaderProps) {
+  const dark = useColorScheme() === "dark";
   return (
     <View style={[styles.row, style]}>
-      <Text style={styles.title}>{title}</Text>
+      <Text style={[styles.title, dark && styles.titleDark]}>{title}</Text>
 
       {actionLabel && onAction ? (
         <Pressable
@@ -45,11 +46,12 @@ type ScreenTitleProps = {
 
 /** Large screen title block used at the top of list/detail screens. */
 export function ScreenTitle({ title, subtitle, right }: ScreenTitleProps) {
+  const dark = useColorScheme() === "dark";
   return (
     <View style={styles.header}>
       <View style={styles.headerText}>
-        <Text style={styles.headerTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.headerSubtitle}>{subtitle}</Text> : null}
+        <Text style={[styles.headerTitle, dark && styles.titleDark]}>{title}</Text>
+        {subtitle ? <Text style={[styles.headerSubtitle, dark && styles.subtitleDark]}>{subtitle}</Text> : null}
       </View>
       {right}
     </View>
@@ -98,4 +100,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: spacing.xs,
   },
+  titleDark: { color: "#EEF4EF" },
+  subtitleDark: { color: "#AAB8AE" },
 });

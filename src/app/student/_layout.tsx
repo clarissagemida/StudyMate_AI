@@ -12,6 +12,8 @@ export default function StudentLayout() {
     <Stack.Screen name="(tabs)" />
     <Stack.Screen name="quiz-attempt" options={{ animation: "slide_from_right" }} />
     <Stack.Screen name="announcements" options={{ animation: "slide_from_right" }} />
+    <Stack.Screen name="analytics" options={{ animation: "slide_from_right" }} />
+    <Stack.Screen name="notifications" options={{ animation: "slide_from_right" }} />
     <Stack.Screen name="profile" options={{ animation: "slide_from_right" }} />
     <Stack.Screen name="ai-buddy" options={{ animation: "slide_from_right" }} />
     <Stack.Screen name="practice-generate" options={{ animation: "slide_from_right" }} />

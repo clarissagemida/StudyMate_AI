@@ -1,5 +1,5 @@
 import { colors, radius, spacing } from "@/theme/tokens";
-import { StyleSheet, Text, useColorScheme, View } from "react-native";
+import { StyleSheet, useColorScheme, View } from "react-native";
 
 /** Content-shaped placeholder for a screen while its initial data is loading. */
 export function ScreenSkeleton() {
@@ -9,13 +9,12 @@ export function ScreenSkeleton() {
     <View
       accessible
       accessibilityRole="progressbar"
-      accessibilityLabel="Loading screen"
+      accessibilityLabel="Preparing screen"
       accessibilityState={{ busy: true }}
       role="progressbar"
-      aria-valuetext="Loading screen"
+      aria-valuetext="Preparing screen"
       style={styles.container}
     >
-      <Text style={styles.loadingLabel}>Loading…</Text>
       <View style={styles.heading} />
       <View style={styles.subheading} />
       <View style={styles.feature}>
@@ -45,7 +44,6 @@ return StyleSheet.create({
     paddingTop: spacing.xxl,
     gap: spacing.md,
   },
-  loadingLabel: { color: dark ? "#AAB8AE" : colors.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 0.4 },
   heading: { width: "58%", height: 24, borderRadius: radius.sm, backgroundColor: dark ? "#2B3A30" : "#DDE8DF", marginBottom: 2 },
   subheading: { width: "82%", height: 11, borderRadius: radius.pill, backgroundColor: dark ? "#26342A" : "#E5ECE6", marginBottom: spacing.md },
   feature: { minHeight: 112, padding: spacing.lg, borderRadius: radius.xl, backgroundColor: dark ? "#223328" : "#DCE9DF", justifyContent: "center", gap: spacing.md, marginBottom: spacing.sm },

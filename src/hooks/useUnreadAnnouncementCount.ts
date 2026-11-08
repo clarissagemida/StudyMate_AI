@@ -11,14 +11,15 @@ export function useUnreadAnnouncementCount(enabled: boolean) {
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (!user || authError) return;
 
-    const [{ data: announcements, error: announcementsError }, { data: reads, error: readsError }] = await Promise.all([
+    const [announcementsResult, readsResult] = await Promise.all([
       supabase.from("announcements").select("id").order("created_at", { ascending: false }).limit(500),
       supabase.from("announcement_reads").select("announcement_id").eq("student_id", user.id),
     ]);
 
-    if (announcementsError) return;
-    const seen = new Set(readsError ? [] : (reads ?? []).map((row) => row.announcement_id));
-    setCount((announcements ?? []).reduce((total, item) => total + (seen.has(item.id) ? 0 : 1), 0));
+    if (announcementsResult.error) return;
+    const seen = new Set(readsResult.error ? [] : (readsResult.data ?? []).map((row) => row.announcement_id));
+    const unreadAnnouncements = (announcementsResult.data ?? []).reduce((total, item) => total + (seen.has(item.id) ? 0 : 1), 0);
+    setCount(unreadAnnouncements);
   }, [enabled]);
 
   useEffect(() => {

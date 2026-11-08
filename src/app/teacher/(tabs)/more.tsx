@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 import { colors, radius, spacing } from "@/theme/tokens";
 
 type MenuItem = { title: string; description: string; icon: keyof typeof Ionicons.glyphMap; path: string };
@@ -40,7 +40,7 @@ function MenuRow({ item }: { item: MenuItem }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.xl, paddingBottom: spacing.xxxl },
+  content: { padding: spacing.xl, paddingTop: 72, paddingBottom: spacing.xxxl },
   eyebrow: { color: colors.primary, fontSize: 10, fontWeight: "800", letterSpacing: 1.6, marginBottom: spacing.xs },
   title: { color: colors.textStrong, fontSize: 28, fontWeight: "800" },
   subtitle: { color: colors.textMuted, fontSize: 14, marginTop: spacing.xs, marginBottom: spacing.xl },

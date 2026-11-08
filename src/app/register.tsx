@@ -1,15 +1,14 @@
 import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { confirmAction, showNotice } from "@/utils/notify";
+import { queueProfilePhoto, uploadProfilePhotoBase64 } from "@/utils/uploadProfilePhoto";
 import { Ionicons } from "@expo/vector-icons";
-import { decode } from "base64-arraybuffer";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useState } from "react";
 import {
   Image,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -33,7 +32,6 @@ export default function RegisterScreen() {
   const [requestedRole, setRequestedRole] = useState<UserRole>("student");
 
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
-  const [avatarMimeType, setAvatarMimeType] = useState<string | null>(null);
   const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
 
   const [showPassword, setShowPassword] = useState(false);
@@ -116,7 +114,6 @@ export default function RegisterScreen() {
       }
 
       setAvatarUri(photo.uri);
-      setAvatarMimeType(photo.mimeType ?? "image/jpeg");
       setAvatarBase64(photo.base64);
     } catch (error) {
       console.error("Photo selection failed:", error);
@@ -129,7 +126,6 @@ export default function RegisterScreen() {
 
   const removeProfilePhoto = () => {
     setAvatarUri(null);
-    setAvatarMimeType(null);
     setAvatarBase64(null);
   };
 
@@ -141,48 +137,7 @@ export default function RegisterScreen() {
     if (!avatarBase64) return false;
 
     try {
-      const extension =
-        avatarMimeType === "image/png"
-          ? "png"
-          : avatarMimeType === "image/webp"
-            ? "webp"
-            : avatarMimeType === "image/heic"
-              ? "heic"
-              : "jpg";
-
-      const photoPath = `${userId}/profile-${Date.now()}.${extension}`;
-      const fileBuffer = decode(avatarBase64);
-
-      if (fileBuffer.byteLength === 0) {
-        throw new Error("The selected photo is empty.");
-      }
-
-      const { error: uploadError } = await supabase.storage
-        .from("profile-photos")
-        .upload(photoPath, fileBuffer, {
-          contentType: avatarMimeType ?? "image/jpeg",
-          upsert: false,
-        });
-
-      if (uploadError) throw uploadError;
-
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .update({ avatar_path: photoPath })
-        .eq("id", userId);
-
-      if (profileError) {
-        const { error: cleanupError } = await supabase.storage
-          .from("profile-photos")
-          .remove([photoPath]);
-
-        if (cleanupError) {
-          console.error("Photo cleanup failed:", cleanupError.message);
-        }
-
-        throw profileError;
-      }
-
+      await uploadProfilePhotoBase64(userId, avatarBase64);
       return true;
     } catch (error) {
       console.error("Profile photo upload failed:", error);
@@ -349,11 +304,19 @@ export default function RegisterScreen() {
 
       const userId = data.user.id;
       let photoUploaded = false;
+      let photoQueued = false;
 
       // 2. Upload the photo if Supabase returned a session.
       // When there is no session, skip the upload instead of failing signup.
       if (data.session && avatarBase64) {
         photoUploaded = await uploadProfilePhoto(userId);
+      } else if (!data.session && avatarBase64) {
+        try {
+          await queueProfilePhoto(userId, avatarBase64);
+          photoQueued = true;
+        } catch (queueError) {
+          console.error("Could not save the selected photo until sign-in:", queueError);
+        }
       }
 
       // 3. Ask the custom Edge Function to send a six-digit code using Resend.
@@ -415,11 +378,11 @@ export default function RegisterScreen() {
 
       if (avatarBase64 && photoUploaded) {
         successMessage += "\n\nYour profile photo was saved.";
+      } else if (avatarBase64 && photoQueued) {
+        successMessage += "\n\nYour profile photo will be saved automatically after your first sign-in.";
       } else if (avatarBase64 && !photoUploaded) {
         successMessage +=
           "\n\nYour photo could not be saved during registration. You can try adding it after signing in.";
-      } else if (avatarBase64 && !data.session) {
-        successMessage += "\n\nYour photo can be added after you sign in.";
       }
 
       confirmAction(
@@ -446,7 +409,7 @@ export default function RegisterScreen() {
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         <ScrollView
           contentContainerStyle={styles.scrollContent}

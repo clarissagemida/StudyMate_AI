@@ -13,7 +13,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 import { showNotice } from "@/utils/notify";
 import type { PracticeConfig, PracticeDifficulty, PracticeQuestionType } from "@/utils/studentPractice";
 

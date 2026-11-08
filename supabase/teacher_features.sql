@@ -182,6 +182,13 @@ create policy "materials_storage_delete"
 -- ----------------------------------------------------------------------------
 -- Quiz answer keys must not be readable by students through PostgREST
 -- ----------------------------------------------------------------------------
+-- Keep the stable RPC shape in sync with quiz_question_types.sql so this
+-- script can be safely rerun after the extended question schema is installed.
+alter table public.quiz_questions
+  add column if not exists question_type text not null default 'multiple_choice';
+alter table public.quiz_questions
+  add column if not exists answer_text text not null default '';
+
 drop policy if exists "quiz_questions_select_access" on public.quiz_questions;
 create policy "quiz_questions_select_access"
   on public.quiz_questions
@@ -197,19 +204,23 @@ create policy "quiz_questions_select_access"
   );
 
 -- Safe questions for the taking screen: no correct_index, no explanation.
+-- quiz_question_types.sql adds question_type to this same RPC, so drop and
+-- recreate it here to support repeat runs in either migration state.
+drop function if exists public.get_quiz_questions(uuid);
 create or replace function public.get_quiz_questions(p_quiz_id uuid)
 returns table (
   id uuid,
   "position" integer,
   prompt text,
-  options jsonb
+  options jsonb,
+  question_type text
 )
 language sql
 stable
 security definer
 set search_path = public
 as $$
-  select qq.id, qq.position, qq.prompt, qq.options
+  select qq.id, qq.position, qq.prompt, qq.options, qq.question_type
   from public.quiz_questions qq
   join public.quizzes q on q.id = qq.quiz_id
   where qq.quiz_id = p_quiz_id
@@ -227,6 +238,7 @@ $$;
 revoke all on function public.get_quiz_questions(uuid) from public, anon;
 grant execute on function public.get_quiz_questions(uuid)
   to authenticated, service_role;
+notify pgrst, 'reload schema';
 
 -- Published question counts for the student quiz list. Students cannot read
 -- quiz_questions directly after the policy above, but they may see how many
@@ -262,6 +274,11 @@ grant execute on function public.get_published_quiz_question_counts()
 
 -- Grade and persist an attempt on the server. p_answers is a JSON object:
 --   { "<question uuid>": <selected option index>, ... }
+-- Preserve the richer grader installed by quiz_question_types.sql on reruns.
+do $migration$
+begin
+  if to_regprocedure('public.submit_quiz_attempt(uuid,jsonb)') is null then
+    execute $create$
 create or replace function public.submit_quiz_attempt(
   p_quiz_id uuid,
   p_answers jsonb
@@ -270,7 +287,7 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = public
-as $$
+as $function_body$
 declare
   v_student_id uuid := auth.uid();
   v_attempt_id uuid;
@@ -379,7 +396,11 @@ begin
     'questions', v_review
   );
 end;
-$$;
+$function_body$;
+    $create$;
+  end if;
+end;
+$migration$;
 
 revoke all on function public.submit_quiz_attempt(uuid, jsonb) from public, anon;
 grant execute on function public.submit_quiz_attempt(uuid, jsonb)
@@ -487,6 +508,75 @@ $$;
 revoke all on function public.teacher_student_attempts(uuid) from public, anon;
 grant execute on function public.teacher_student_attempts(uuid)
   to authenticated, service_role;
+
+-- Compact dashboard data: no grades or profile image paths are sent to the
+-- dashboard. Detailed student results remain behind teacher_student_attempts.
+create or replace function public.teacher_dashboard_summary()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_teacher_id uuid := auth.uid();
+begin
+  if not exists (
+    select 1 from public.profiles p
+    where p.id = v_teacher_id and p.role = 'teacher' and p.approval_status = 'approved'
+  ) then
+    raise exception 'Only approved teachers can view dashboard summaries'
+      using errcode = '42501';
+  end if;
+
+  return jsonb_build_object(
+    'materials_count', (
+      select count(*) from public.materials m
+      where m.teacher_id = v_teacher_id and m.archived_at is null
+    ),
+    'quiz_count', (
+      select count(*) from public.quizzes q where q.teacher_id = v_teacher_id
+    ),
+    'published_quiz_count', (
+      select count(*) from public.quizzes q
+      where q.teacher_id = v_teacher_id and q.status = 'published'
+    ),
+    'student_count', (
+      select count(distinct a.student_id)
+      from public.quiz_attempts a
+      join public.quizzes q on q.id = a.quiz_id
+      where q.teacher_id = v_teacher_id
+    ),
+    'quiz_attempt_count', (
+      select count(*)
+      from public.quiz_attempts a
+      join public.quizzes q on q.id = a.quiz_id
+      where q.teacher_id = v_teacher_id
+    ),
+    'recent_activity', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'student_id', recent.student_id,
+        'full_name', recent.full_name,
+        'last_attempt_at', recent.last_attempt_at
+      ) order by recent.last_attempt_at desc)
+      from (
+        select p.id as student_id,
+          coalesce(nullif(btrim(p.full_name), ''), 'Student') as full_name,
+          max(a.created_at) as last_attempt_at
+        from public.quiz_attempts a
+        join public.quizzes q on q.id = a.quiz_id and q.teacher_id = v_teacher_id
+        join public.profiles p on p.id = a.student_id
+        group by p.id, p.full_name
+        order by max(a.created_at) desc
+        limit 3
+      ) recent
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+revoke all on function public.teacher_dashboard_summary() from public, anon;
+grant execute on function public.teacher_dashboard_summary() to authenticated;
+notify pgrst, 'reload schema';
 
 -- ============================================================================
 -- Notes

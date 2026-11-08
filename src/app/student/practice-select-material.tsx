@@ -17,7 +17,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = colors.primary;
 const DARK_GREEN = colors.primaryDeep;
@@ -225,6 +225,7 @@ export default function PracticeSelectMaterialScreen() {
         <FlatList
           data={visible}
           keyExtractor={(item) => item.id}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => {
             const teacherName = item.teacher_id ? teachers[item.teacher_id] : null;

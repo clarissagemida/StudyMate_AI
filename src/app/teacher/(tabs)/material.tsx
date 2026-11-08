@@ -35,7 +35,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -44,7 +43,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = colors.primary;
 const DARK_GREEN = colors.primaryDark;
@@ -1363,7 +1362,7 @@ export default function TeacherMaterialsScreen() {
       >
         <KeyboardAvoidingView
           style={styles.modalBackdrop}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
         >
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
@@ -1821,7 +1820,7 @@ export default function TeacherMaterialsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: BG },
+  safeArea: { flex: 1, backgroundColor: BG, paddingTop: 60 },
   refreshProgress: {
     position: "absolute",
     top: 0,

@@ -10,7 +10,7 @@ import {
 } from "@/utils/materialFiles";
 import { showNotice } from "@/utils/notify";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
@@ -21,7 +21,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = "#176B45";
 const DARK_GREEN = "#123D2A";
@@ -72,12 +72,14 @@ function isMissingColumn(
 }
 
 export default function StudentStudyScreen() {
+  const { subject } = useLocalSearchParams<{ subject?: string | string[] }>();
+  const initialSubject = Array.isArray(subject) ? subject[0] : subject;
   const [items, setItems] = useState<Material[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tableMissing, setTableMissing] = useState(false);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSubject?.trim() ?? "");
   const [readerMaterial, setReaderMaterial] = useState<Material | null>(null);
   const [readerVisible, setReaderVisible] = useState(false);
   const [readerLoading, setReaderLoading] = useState(false);
@@ -386,6 +388,7 @@ export default function StudentStudyScreen() {
       <FlatList
         data={visibleItems}
         keyExtractor={(item) => item.id}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
         refreshControl={

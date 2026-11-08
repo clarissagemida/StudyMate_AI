@@ -1,4 +1,3 @@
-import { ProgressIndicator } from "@/components/ui/progress-indicator";
 import { supabase } from "@/lib/supabase";
 import { AI_ENABLED } from "@/utils/aiFlags";
 import { confirmAction, showNotice } from "@/utils/notify";
@@ -6,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
+  KeyboardAvoidingView,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,7 +13,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 import { useRequireRole } from "@/hooks/useRequireRole";
 
 const GREEN = "#176B45";
@@ -178,8 +178,13 @@ ${lines.join("\n\n")}`.slice(0, 1900);
 
 export default function QuizAttemptScreen() {
   const guardState = useRequireRole("student");
-  const params = useLocalSearchParams<{ quizId?: string }>();
-  const quizId = typeof params.quizId === "string" ? params.quizId : "";
+  const params = useLocalSearchParams<{ quizId?: string | string[] }>();
+  const quizIdParam = params.quizId;
+  const quizId = typeof quizIdParam === "string"
+    ? quizIdParam.trim()
+    : Array.isArray(quizIdParam)
+      ? quizIdParam.find((value) => typeof value === "string" && value.trim())?.trim() ?? ""
+      : "";
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [quiz, setQuiz] = useState<QuizMeta | null>(null);
@@ -197,12 +202,12 @@ export default function QuizAttemptScreen() {
   const loadQuiz = useCallback(async () => {
     setPhase("loading");
     setLoadError(null);
+    if (!quizId) {
+      setLoadError("No quiz was selected. Go back and choose a quiz to continue.");
+      return;
+    }
 
     try {
-      if (!quizId) {
-        throw new Error("No quiz was selected.");
-      }
-
       const {
         data: { user },
         error: authError,
@@ -404,13 +409,30 @@ export default function QuizAttemptScreen() {
 
   if (phase === "loading" && !loadError) {
     return (
-      <SafeAreaView style={styles.center} edges={["top", "bottom"]}>
-        <ProgressIndicator
-          size="lg"
-          color={GREEN}
-          accessibilityLabel="Loading quiz"
-        />
-        <Text style={styles.centerText}>Loading quiz...</Text>
+      <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+        <View accessible accessibilityRole="progressbar" accessibilityLabel="Loading quiz" accessibilityState={{ busy: true }} style={styles.quizSkeleton}>
+          <View style={styles.skeletonTopBar}>
+            <View style={styles.skeletonBack} />
+            <View style={styles.skeletonHeading}>
+              <View style={[styles.skeletonLine, styles.skeletonHeadingLine]} />
+              <View style={[styles.skeletonLine, styles.skeletonSubheadingLine]} />
+            </View>
+            <View style={styles.skeletonTopSpacer} />
+          </View>
+          <View style={styles.skeletonProgressTrack}><View style={styles.skeletonProgressFill} /></View>
+          <ScrollView contentContainerStyle={styles.skeletonQuestionContent} showsVerticalScrollIndicator={false}>
+            <View style={styles.skeletonMetaRow}><View style={styles.skeletonChip} /><View style={[styles.skeletonChip, styles.skeletonChipShort]} /><View style={[styles.skeletonChip, styles.skeletonChipSmall]} /></View>
+            <View style={styles.skeletonPromptBlock}>
+              <View style={[styles.skeletonLine, styles.skeletonPromptLine]} />
+              <View style={[styles.skeletonLine, styles.skeletonPromptLineSecond]} />
+              <View style={[styles.skeletonLine, styles.skeletonPromptLineShort]} />
+            </View>
+            <View style={styles.skeletonAnswers}>
+              {[0, 1, 2, 3].map((item) => <View key={item} style={styles.skeletonAnswer}><View style={styles.skeletonOptionLabel} /><View style={styles.skeletonOptionText} /></View>)}
+            </View>
+          </ScrollView>
+          <View style={styles.skeletonFooter}><View style={styles.skeletonFooterButton} /><View style={[styles.skeletonFooterButton, styles.skeletonFooterPrimary]} /></View>
+        </View>
       </SafeAreaView>
     );
   }
@@ -606,6 +628,7 @@ export default function QuizAttemptScreen() {
   // phase === "taking"
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <KeyboardAvoidingView style={styles.quizKeyboard} behavior="padding">
       <View style={styles.topBar}>
         <Pressable
           onPress={handleExit}
@@ -634,6 +657,7 @@ export default function QuizAttemptScreen() {
 
       <ScrollView
         contentContainerStyle={styles.questionContent}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.metaRow}>
@@ -748,12 +772,40 @@ export default function QuizAttemptScreen() {
           </Pressable>
         )}
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: BG },
+  quizKeyboard: { flex: 1 },
+  quizSkeleton: { flex: 1, backgroundColor: BG },
+  skeletonTopBar: { minHeight: 64, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 8, paddingBottom: 10, backgroundColor: "#FFFFFF" },
+  skeletonBack: { width: 34, height: 34, borderRadius: 11, backgroundColor: "#E3ECE5" },
+  skeletonHeading: { flex: 1, alignItems: "center", gap: 8 },
+  skeletonLine: { height: 10, borderRadius: 6, backgroundColor: "#DDE8DF" },
+  skeletonHeadingLine: { width: 118, height: 12 },
+  skeletonSubheadingLine: { width: 78, height: 8, backgroundColor: "#E8EEE9" },
+  skeletonTopSpacer: { width: 34, height: 34 },
+  skeletonProgressTrack: { height: 6, marginHorizontal: 20, borderRadius: 999, backgroundColor: "#E2EAE3", overflow: "hidden" },
+  skeletonProgressFill: { width: "32%", height: "100%", borderRadius: 999, backgroundColor: "#C7DCCB" },
+  skeletonQuestionContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 26, gap: 18 },
+  skeletonMetaRow: { flexDirection: "row", gap: 8 },
+  skeletonChip: { width: 80, height: 24, borderRadius: 999, backgroundColor: "#E3ECE5" },
+  skeletonChipShort: { width: 62 },
+  skeletonChipSmall: { width: 48 },
+  skeletonPromptBlock: { minHeight: 132, justifyContent: "center", gap: 12, padding: 18, borderRadius: 16, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E5EDE7" },
+  skeletonPromptLine: { width: "94%", height: 15 },
+  skeletonPromptLineSecond: { width: "82%", height: 15 },
+  skeletonPromptLineShort: { width: "57%", height: 15 },
+  skeletonAnswers: { gap: 10 },
+  skeletonAnswer: { minHeight: 60, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 14, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#E5EDE7" },
+  skeletonOptionLabel: { width: 30, height: 30, borderRadius: 10, backgroundColor: "#E3ECE5" },
+  skeletonOptionText: { flex: 1, height: 11, borderRadius: 6, backgroundColor: "#E8EEE9" },
+  skeletonFooter: { flexDirection: "row", justifyContent: "space-between", gap: 12, paddingHorizontal: 20, paddingVertical: 16, borderTopWidth: 1, borderTopColor: "#E7EEE9", backgroundColor: "#FFFFFF" },
+  skeletonFooterButton: { flex: 1, height: 48, borderRadius: 12, backgroundColor: "#E3ECE5" },
+  skeletonFooterPrimary: { backgroundColor: "#C7DCCB" },
   center: {
     flex: 1,
     backgroundColor: BG,

@@ -3,7 +3,7 @@ import { evaluatePasswordStrength, isPasswordStrongEnough } from "@/utils/passwo
 import { colors, radius, spacing } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 export function ChangePasswordModal({ visible, onClose, onSuccess }: { visible: boolean; onClose: () => void; onSuccess: (message: string) => void }) {
   const [currentPassword, setCurrentPassword] = useState("");
@@ -52,7 +52,7 @@ export function ChangePasswordModal({ visible, onClose, onSuccess }: { visible: 
   </View>;
 
   return <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
-    <KeyboardAvoidingView style={styles.backdrop} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <KeyboardAvoidingView style={styles.backdrop} behavior="padding">
       <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close change password dialog" />
       <View style={styles.sheet}>
         <View style={styles.headingRow}><View style={styles.keyIcon}><Ionicons name="key-outline" size={20} color={colors.primary} /></View><View style={styles.headingCopy}><Text style={styles.title}>Change password</Text><Text style={styles.subtitle}>Your new password is saved securely by Supabase Auth.</Text></View><Pressable onPress={close} disabled={saving} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close"><Ionicons name="close" size={22} color="#718078" /></Pressable></View>

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, text } from "@/theme/tokens";
 import { ComponentProps } from "react";
-import { StyleSheet, Text, View, ViewStyle } from "react-native";
+import { StyleSheet, Text, useColorScheme, View, ViewStyle } from "react-native";
 
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
 
@@ -30,7 +30,8 @@ export function Chip({
   icon?: IoniconName;
   style?: ViewStyle | ViewStyle[];
 }) {
-  const t = toneStyles[tone];
+  const dark = useColorScheme() === "dark";
+  const t = dark && tone === "neutral" ? { bg: "#26342A", fg: "#D4E0D7" } : dark && tone === "brand" ? { bg: "#21392A", fg: "#B9E4C7" } : toneStyles[tone];
   return (
     <View style={[styles.chip, { backgroundColor: t.bg }, style]}>
       {icon ? <Ionicons name={icon} size={12} color={t.fg} /> : null}
@@ -49,7 +50,8 @@ export function StatusPill({
   tone?: Tone;
   icon?: IoniconName;
 }) {
-  const t = toneStyles[tone];
+  const dark = useColorScheme() === "dark";
+  const t = dark && tone === "neutral" ? { bg: "#26342A", fg: "#D4E0D7" } : dark && tone === "brand" ? { bg: "#21392A", fg: "#B9E4C7" } : toneStyles[tone];
   return (
     <View style={[styles.pill, { backgroundColor: t.bg }]}>
       {icon ? <Ionicons name={icon} size={12} color={t.fg} /> : null}

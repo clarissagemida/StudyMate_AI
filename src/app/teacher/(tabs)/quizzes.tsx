@@ -15,7 +15,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -24,13 +23,14 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
 
 const GREEN = colors.primary;
 const DARK_GREEN = colors.primaryDark;
 const BG = colors.background;
 
 type QuizStatus = "draft" | "published";
+type QuizAttemptLimit = "1" | "2" | "3" | "5" | "unlimited";
 type Difficulty = "easy" | "medium" | "hard" | "mixed";
 type SectionDifficulty = Exclude<Difficulty, "mixed">;
 type QuestionType =
@@ -47,6 +47,8 @@ type QuizRow = {
   difficulty: Difficulty;
   description: string;
   status: QuizStatus;
+  due_at: string | null;
+  max_attempts: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -77,6 +79,8 @@ type QuizForm = {
   subject: string;
   topic: string;
   description: string;
+  dueAt: string;
+  maxAttempts: QuizAttemptLimit;
 };
 
 type LoadMode = "initial" | "refresh";
@@ -93,7 +97,41 @@ const EMPTY_FORM: QuizForm = {
   subject: "",
   topic: "",
   description: "",
+  dueAt: "",
+  maxAttempts: "1",
 };
+
+const ATTEMPT_LIMITS: { label: string; value: QuizAttemptLimit }[] = [
+  { label: "1", value: "1" },
+  { label: "2", value: "2" },
+  { label: "3", value: "3" },
+  { label: "5", value: "5" },
+  { label: "Unlimited", value: "unlimited" },
+];
+
+function isValidDateInput(value: string): boolean {
+  if (!value) return true;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [, year, month, day] = match;
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return parsed.getUTCFullYear() === Number(year)
+    && parsed.getUTCMonth() === Number(month) - 1
+    && parsed.getUTCDate() === Number(day);
+}
+
+function toDateInput(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateInput(value: string): Date | null {
+  if (!value || !isValidDateInput(value)) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
 
 const DIFFICULTIES: { label: string; value: SectionDifficulty }[] = [
   { label: "Easy", value: "easy" },
@@ -166,6 +204,12 @@ function isMissingRelation(
 
 function quizQuestionSchemaHint(message: string): string {
   const normalized = message.toLowerCase();
+  if (normalized.includes("due_at") && (normalized.includes("schema cache") || normalized.includes("column"))) {
+    return `${message}\n\nThe quiz deadline column is missing from Supabase. Run supabase/quiz_schedule.sql in the Supabase SQL Editor, then refresh the app and retry.`;
+  }
+  if (normalized.includes("max_attempts") && (normalized.includes("schema cache") || normalized.includes("column"))) {
+    return `${message}\n\nThe quiz attempt-limit column is missing from Supabase. Run supabase/quiz_attempt_limits.sql in the Supabase SQL Editor, then refresh the app and retry.`;
+  }
   if (
     normalized.includes("question_type") ||
     normalized.includes("answer_text") ||
@@ -241,6 +285,11 @@ export default function TeacherQuizzesScreen() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingStatus, setEditingStatus] = useState<QuizStatus>("draft");
   const [form, setForm] = useState<QuizForm>(EMPTY_FORM);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1);
+  });
   const [questions, setQuestions] = useState<QuestionDraft[]>([
     makeEmptyQuestion(),
   ]);
@@ -273,6 +322,13 @@ export default function TeacherQuizzesScreen() {
   const aiGroupsValid = aiGroups.length >= 1 && aiGroups.length <= 6 &&
     parsedAiGroups.every((group) => Number.isInteger(group.questionCount) && group.questionCount >= 1) &&
     aiTotalCount <= 50;
+  const calendarCells = useMemo(() => {
+    if (Number.isNaN(calendarMonth.getTime())) return [];
+    const firstDay = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1).getDay();
+    const daysInMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate();
+    if (!Number.isFinite(firstDay) || !Number.isFinite(daysInMonth) || daysInMonth < 1) return [];
+    return [...Array(firstDay).fill(null), ...Array.from({ length: daysInMonth }, (_, index) => index + 1)];
+  }, [calendarMonth]);
   const [topicDropdownOpen, setTopicDropdownOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [regeneratingKey, setRegeneratingKey] = useState<string | null>(null);
@@ -294,7 +350,7 @@ export default function TeacherQuizzesScreen() {
       const { data, error } = await supabase
         .from("quizzes")
         .select(
-          "id, title, subject, topic, difficulty, description, status, created_at, updated_at",
+          "id, title, subject, topic, difficulty, description, status, due_at, max_attempts, created_at, updated_at",
         )
         .eq("teacher_id", user.id)
         .order("created_at", { ascending: false });
@@ -471,6 +527,8 @@ export default function TeacherQuizzesScreen() {
       subject: item.subject,
       topic: item.topic ?? "",
       description: item.description ?? "",
+      dueAt: item.due_at ? new Date(item.due_at).toISOString().slice(0, 10) : "",
+      maxAttempts: item.max_attempts == null ? "unlimited" : String(item.max_attempts) as QuizAttemptLimit,
     });
     setFormErrors({});
     setQuestions([]);
@@ -842,6 +900,10 @@ export default function TeacherQuizzesScreen() {
       errors.description = "Description must be 2000 characters or fewer.";
     }
 
+    if (!isValidDateInput(form.dueAt.trim())) {
+      errors.dueAt = "Enter a valid date in YYYY-MM-DD format.";
+    }
+
     if (questions.length === 0) {
       errors.questions = "Generate questions with AI before saving this quiz.";
     }
@@ -930,6 +992,8 @@ export default function TeacherQuizzesScreen() {
         topic: form.topic.trim(),
         difficulty: overallDifficulty,
         description: form.description.trim(),
+        due_at: form.dueAt.trim() ? new Date(`${form.dueAt.trim()}T23:59:59`).toISOString() : null,
+        max_attempts: form.maxAttempts === "unlimited" ? null : Number(form.maxAttempts),
         status: nextStatus,
         updated_at: new Date().toISOString(),
       };
@@ -1407,7 +1471,7 @@ export default function TeacherQuizzesScreen() {
       >
         <KeyboardAvoidingView
           style={styles.modalBackdrop}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior="padding"
         >
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
@@ -1538,6 +1602,50 @@ export default function TeacherQuizzesScreen() {
               {formErrors.description && (
                 <Text style={styles.errorText}>{formErrors.description}</Text>
               )}
+
+              <Text style={styles.label}>Quiz deadline (optional)</Text>
+              <Text style={styles.fieldHint}>Students will see this date on their dashboard. Leave it blank for an open quiz.</Text>
+              <View style={styles.deadlineRow}>
+                <Pressable
+                  onPress={() => {
+                    const selected = parseDateInput(form.dueAt);
+                    const date = selected ?? new Date();
+                    setCalendarMonth(new Date(date.getFullYear(), date.getMonth(), 1));
+                    setCalendarOpen(true);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={form.dueAt ? `Quiz deadline ${form.dueAt}, change date` : "Choose quiz deadline from calendar"}
+                  style={[styles.deadlineField, formErrors.dueAt && styles.inputError]}
+                >
+                  <Ionicons name="calendar-outline" size={19} color={GREEN} />
+                  <Text style={[styles.deadlineValue, !form.dueAt && styles.deadlinePlaceholder]}>
+                    {parseDateInput(form.dueAt)?.toLocaleDateString("en-PH", { weekday: "short", month: "long", day: "numeric", year: "numeric" }) ?? "Choose a date"}
+                  </Text>
+                  <Ionicons name="open-outline" size={17} color="#708078" />
+                </Pressable>
+                {form.dueAt ? <Pressable onPress={() => { setForm((current) => ({ ...current, dueAt: "" })); setFormErrors((current) => ({ ...current, dueAt: "" })); }} accessibilityRole="button" accessibilityLabel="Clear quiz deadline" style={styles.clearDeadline}><Ionicons name="close-circle" size={21} color="#87948B" /></Pressable> : null}
+              </View>
+              {formErrors.dueAt ? <Text style={styles.errorText}>{formErrors.dueAt}</Text> : null}
+
+              <Text style={styles.label}>Attempts allowed</Text>
+              <Text style={styles.fieldHint}>Set a limit for graded quizzes or allow unlimited attempts for practice.</Text>
+              <View style={styles.attemptLimitRow}>
+                {ATTEMPT_LIMITS.map((option) => {
+                  const selected = form.maxAttempts === option.value;
+                  return (
+                    <Pressable
+                      key={option.value}
+                      onPress={() => setForm((current) => ({ ...current, maxAttempts: option.value }))}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${option.label} ${option.value === "unlimited" ? "attempts" : Number(option.value) === 1 ? "attempt" : "attempts"}`}
+                      style={[styles.attemptLimitOption, selected && styles.attemptLimitOptionSelected]}
+                    >
+                      <Text style={[styles.attemptLimitText, selected && styles.attemptLimitTextSelected]}>{option.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
 
               {AI_ENABLED ? (
                 <View style={styles.aiPanel}>
@@ -2129,12 +2237,49 @@ export default function TeacherQuizzesScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      <Modal
+        visible={calendarOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCalendarOpen(false)}
+      >
+        <View style={styles.calendarBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setCalendarOpen(false)} accessibilityLabel="Close calendar" />
+          <View style={styles.calendarModal}>
+            <View style={styles.calendarModalTitleRow}>
+              <View style={styles.calendarModalIcon}><Ionicons name="calendar-outline" size={20} color={GREEN} /></View>
+              <View style={styles.calendarModalCopy}><Text style={styles.calendarModalTitle}>Set quiz deadline</Text><Text style={styles.calendarModalSubtitle}>Choose when students should finish this quiz.</Text></View>
+              <Pressable onPress={() => setCalendarOpen(false)} accessibilityRole="button" accessibilityLabel="Close date picker" hitSlop={8} style={styles.calendarClose}><Ionicons name="close" size={21} color="#64756A" /></Pressable>
+            </View>
+            <View style={styles.calendarHeader}>
+              <Pressable onPress={() => setCalendarMonth((month) => new Date(month.getFullYear(), month.getMonth() - 1, 1))} accessibilityRole="button" accessibilityLabel="Previous month" style={styles.calendarArrow}><Ionicons name="chevron-back" size={18} color={DARK_GREEN} /></Pressable>
+              <Text style={styles.calendarMonth}>{calendarMonth.toLocaleDateString("en-PH", { month: "long", year: "numeric" })}</Text>
+              <Pressable onPress={() => setCalendarMonth((month) => new Date(month.getFullYear(), month.getMonth() + 1, 1))} accessibilityRole="button" accessibilityLabel="Next month" style={styles.calendarArrow}><Ionicons name="chevron-forward" size={18} color={DARK_GREEN} /></Pressable>
+            </View>
+            <View style={styles.calendarGrid}>
+              {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => <Text key={day} style={styles.calendarWeekday}>{day}</Text>)}
+              {calendarCells.map((day, index) => {
+                if (day === null) return <View key={`blank-${index}`} style={styles.calendarDay} />;
+                const date = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day);
+                const value = toDateInput(date);
+                const selected = value === form.dueAt;
+                const today = value === toDateInput(new Date());
+                return <Pressable key={value} onPress={() => { setForm((current) => ({ ...current, dueAt: value })); setFormErrors((current) => ({ ...current, dueAt: "" })); setCalendarOpen(false); }} accessibilityRole="button" accessibilityState={{ selected }} accessibilityLabel={`Select ${date.toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" })}`} style={[styles.calendarDay, selected && styles.calendarDaySelected, today && !selected && styles.calendarDayToday]}><Text style={[styles.calendarDayText, selected && styles.calendarDayTextSelected, today && !selected && styles.calendarDayTodayText]}>{day}</Text></Pressable>;
+              })}
+            </View>
+            <View style={styles.calendarModalActions}>
+              <Pressable onPress={() => { const today = new Date(); setCalendarMonth(new Date(today.getFullYear(), today.getMonth(), 1)); }} accessibilityRole="button" style={styles.todayButton}><Text style={styles.todayButtonText}>Go to today</Text></Pressable>
+              <Pressable onPress={() => setCalendarOpen(false)} accessibilityRole="button" style={styles.calendarDone}><Text style={styles.calendarDoneText}>Cancel</Text></Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: BG },
+  safeArea: { flex: 1, backgroundColor: BG, paddingTop: 60 },
   refreshProgress: {
     position: "absolute",
     top: 0,
@@ -2285,6 +2430,41 @@ const styles = StyleSheet.create({
     marginTop: spacing.md + 2,
     marginBottom: 7,
   },
+  fieldHint: { color: colors.textMuted, fontSize: 11, lineHeight: 16, marginTop: -3, marginBottom: 7 },
+  deadlineRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deadlineField: { flex: 1, minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: spacing.md, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: "#F7FAF8" },
+  deadlineValue: { flex: 1, color: DARK_GREEN, fontSize: 13, fontWeight: "700" },
+  deadlinePlaceholder: { color: "#89968E", fontWeight: "500" },
+  clearDeadline: { width: 36, height: 42, alignItems: "center", justifyContent: "center" },
+  calendarBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg, backgroundColor: "rgba(16, 43, 30, 0.5)" },
+  calendarModal: { width: "100%", maxWidth: 400, borderRadius: radius.xl, backgroundColor: colors.surface, padding: spacing.lg, elevation: 18, shadowColor: "#000000", shadowOpacity: 0.2, shadowRadius: 20, shadowOffset: { width: 0, height: 8 } },
+  calendarModalTitleRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: spacing.lg },
+  calendarModalIcon: { width: 40, height: 40, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: colors.primarySoft },
+  calendarModalCopy: { flex: 1 },
+  calendarModalTitle: { color: DARK_GREEN, fontSize: 15, fontWeight: "800" },
+  calendarModalSubtitle: { color: colors.textMuted, fontSize: 10, lineHeight: 15, marginTop: 3 },
+  calendarClose: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
+  calendarHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.sm },
+  calendarArrow: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.surfaceAlt },
+  calendarMonth: { color: DARK_GREEN, fontSize: 14, fontWeight: "800" },
+  calendarGrid: { flexDirection: "row", flexWrap: "wrap" },
+  calendarWeekday: { width: "14.2857%", height: 32, textAlign: "center", textAlignVertical: "center", color: colors.textMuted, fontSize: 10, fontWeight: "800" },
+  calendarDay: { width: "14.2857%", height: 38, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
+  calendarDaySelected: { backgroundColor: GREEN },
+  calendarDayToday: { borderWidth: 1, borderColor: GREEN },
+  calendarDayText: { color: colors.textPrimary, fontSize: 12, fontWeight: "600" },
+  calendarDayTextSelected: { color: "#FFFFFF", fontWeight: "800" },
+  calendarDayTodayText: { color: GREEN, fontWeight: "800" },
+  todayButton: { alignSelf: "flex-end", paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, marginTop: spacing.xs },
+  todayButtonText: { color: GREEN, fontSize: 11, fontWeight: "800" },
+  calendarModalActions: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.xs },
+  calendarDone: { minWidth: 84, minHeight: 38, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceAlt },
+  calendarDoneText: { color: colors.textMuted, fontSize: 11, fontWeight: "800" },
+  attemptLimitRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  attemptLimitOption: { minHeight: 38, minWidth: 44, paddingHorizontal: spacing.md, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+  attemptLimitOptionSelected: { backgroundColor: colors.primarySoft, borderColor: GREEN },
+  attemptLimitText: { color: colors.textMuted, fontSize: 11, fontWeight: "700" },
+  attemptLimitTextSelected: { color: GREEN, fontWeight: "800" },
   input: {
     backgroundColor: "#F7FAF8",
     borderWidth: 1,

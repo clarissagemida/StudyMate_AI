@@ -3,9 +3,9 @@ import { colors } from "@/theme/tokens";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { showNotice } from "@/utils/notify";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ThemedSafeAreaView as SafeAreaView } from "@/components/themed-safe-area-view";
+import { confirmAction, showNotice } from "@/utils/notify";
 import { invokeAi } from "@/utils/aiClient";
 import type { PracticeConfig, PracticeQuestion } from "@/utils/studentPractice";
 
@@ -38,37 +38,49 @@ export default function PracticeTakeScreen() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+
     const run = async () => {
       if (!config) {
         router.back();
         return;
       }
       setLoading(true);
-      const res = await invokeAi<GenResp>(
-        "student-practice-generator",
-        {
-          materialId: config.materialId,
-          difficulty: config.difficulty,
-          questionCount: config.questionCount,
-          questionType: config.questionType,
-        },
-        { timeoutMs: 120000 },
-      );
-      if (!res.ok) {
-        showNotice("Generation Failed", res.message);
+      try {
+        const res = await invokeAi<GenResp>(
+          "student-practice-generator",
+          {
+            materialId: config.materialId,
+            difficulty: config.difficulty,
+            questionCount: config.questionCount,
+            questionType: config.questionType,
+          },
+          { timeoutMs: 120000 },
+        );
+        if (!res.ok) {
+          throw new Error(res.message);
+        }
+
+        const data = res.data;
+        if (data.status !== "ok" || !Array.isArray(data.questions) || data.questions.length === 0) {
+          throw new Error(data.status === "error" ? data.message : "No questions returned");
+        }
+
+        if (active) setQuestions(data.questions);
+      } catch (error) {
+        if (!active) return;
+        const message = error instanceof Error ? error.message : "Could not generate practice questions.";
+        showNotice("Generation Failed", message);
         router.back();
-        return;
+      } finally {
+        if (active) setLoading(false);
       }
-      const data = res.data as any;
-      if (data.status !== "ok" || !Array.isArray(data.questions) || data.questions.length === 0) {
-        showNotice("Generation Failed", data?.message || "No questions returned");
-        router.back();
-        return;
-      }
-      setQuestions(data.questions);
-      setLoading(false);
     };
     void run();
+
+    return () => {
+      active = false;
+    };
   }, [config]);
 
   const q = questions[idx];
@@ -130,6 +142,20 @@ export default function PracticeTakeScreen() {
     }
   };
 
+  const handleReviewSubmit = () => {
+    const unanswered = total - answered;
+    if (unanswered > 0) {
+      confirmAction(
+        "Submit practice?",
+        `You have ${unanswered} unanswered ${unanswered === 1 ? "question" : "questions"}. They will be marked incorrect.`,
+        () => void submit(),
+        { confirmLabel: "Submit", destructive: true },
+      );
+      return;
+    }
+    void submit();
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.safe}>
@@ -151,7 +177,7 @@ export default function PracticeTakeScreen() {
           <Text style={styles.title}>Review Before Submit</Text>
           <View style={{ width: 36 }} />
         </View>
-        <View style={{ padding: 16, gap: 8 }}>
+        <ScrollView contentContainerStyle={styles.reviewContent} showsVerticalScrollIndicator={false}>
           <Text style={styles.sub}>
             Answered {answered}/{total}
           </Text>
@@ -166,13 +192,13 @@ export default function PracticeTakeScreen() {
               </Text>
             </View>
           ))}
-          <Pressable onPress={submit} disabled={submitting} style={[styles.primary, submitting && styles.disabled]}>
+          <Pressable onPress={handleReviewSubmit} disabled={submitting} style={[styles.primary, submitting && styles.disabled]}>
             <Text style={styles.primaryText}>{submitting ? "Saving..." : "Submit & Save"}</Text>
           </Pressable>
           <Pressable onPress={() => setReview(false)} style={styles.ghost}>
             <Text style={styles.ghostText}>Back to Questions</Text>
           </Pressable>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -250,6 +276,7 @@ const styles = StyleSheet.create({
   ghostText: { color: GREEN, fontWeight: "700" },
   disabled: { opacity: 0.5 },
   sub: { color: "#5B7163" },
+  reviewContent: { padding: 16, gap: 8, paddingBottom: 28 },
   revRow: { backgroundColor: "#fff", borderRadius: 12, borderWidth: 1, borderColor: "#E5EDE7", padding: 10, gap: 4 },
   revQ: { fontWeight: "700", color: "#123D2A" },
   revA: { color: "#5B7163" },

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, text } from "@/theme/tokens";
 import { ComponentProps } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
 
@@ -31,23 +31,24 @@ export function ActionCard({
   showArrow = true,
   accessibilityLabel,
 }: ActionCardProps) {
+  const dark = useColorScheme() === "dark";
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
-      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.card, dark && styles.cardDark, pressed && styles.pressed]}
     >
       <View style={[styles.icon, { backgroundColor: iconBg }]}>
         <Ionicons name={icon} size={24} color={iconColor} />
       </View>
 
-      <Text style={styles.title} numberOfLines={1}>
+      <Text style={[styles.title, dark && styles.titleDark]} numberOfLines={1}>
         {title}
       </Text>
 
       {description ? (
-        <Text style={styles.description} numberOfLines={2}>
+        <Text style={[styles.description, dark && styles.descriptionDark]} numberOfLines={2}>
           {description}
         </Text>
       ) : null}
@@ -72,6 +73,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
   },
   pressed: { opacity: 0.9, transform: [{ scale: 0.985 }] },
+  cardDark: { backgroundColor: "#19241C", borderColor: "#2C3A30" },
   icon: {
     width: 46,
     height: 46,
@@ -96,4 +98,6 @@ const styles = StyleSheet.create({
     alignSelf: "flex-start",
     marginTop: spacing.sm,
   },
+  titleDark: { color: "#EEF4EF" },
+  descriptionDark: { color: "#AAB8AE" },
 });
